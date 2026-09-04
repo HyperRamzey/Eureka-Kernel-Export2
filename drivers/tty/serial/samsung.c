@@ -405,7 +405,6 @@ static void s3c24xx_serial_rx_disable(struct uart_port *port)
 static void s3c24xx_serial_stop_tx(struct uart_port *port)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
->>>>>>> theirs
 
 	if (tx_enabled(port)) {
 		if (s3c24xx_serial_has_interrupt_mask(port))
@@ -494,7 +493,6 @@ static int s3c24xx_serial_tx_fifocnt(struct s3c24xx_uart_port *ourport,
 
 static irqreturn_t
 s3c24xx_serial_rx_chars(int irq, void *dev_id)
->>>>>>> theirs
 {
 	struct s3c24xx_uart_port *ourport = dev_id;
 	struct uart_port *port = &ourport->port;
@@ -659,7 +657,6 @@ static irqreturn_t s3c24xx_serial_tx_chars(int irq, void *id)
 	}
 
 	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
->>>>>>> theirs
 		uart_write_wakeup(port);
 
 	if (uart_circ_empty(xmit))
@@ -1010,7 +1007,6 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 			printk(" - Clock rate : %ld\n", rate);
 
 		if (!rate)
->>>>>>> theirs
 			continue;
 		}
 
@@ -1039,7 +1035,6 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 
 		if (calc_deviation < deviation) {
 			*best_clk = ourport->clk;
->>>>>>> theirs
 			best_quot = quot;
 			*clk_num = cnt;
 			deviation = calc_deviation;

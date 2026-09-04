@@ -4198,7 +4198,6 @@ static int fixup_bpf_calls(struct bpf_verifier_env *env)
 			}
 
 			new_prog = bpf_patch_insn_data(env, i + delta, patchlet, cnt);
->>>>>>> theirs
 			if (!new_prog)
 				return -ENOMEM;
 
