@@ -66,6 +66,10 @@ DEVICE(google, GOOGLE_IDS);
 	{ USB_DEVICE(0x16d0, 0x0870) }
 DEVICE(kaufmann, KAUFMANN_IDS);
 
+/* HP4x (48/49) Generic Serial driver */
+#define HP4X_IDS()			\
+	{ USB_DEVICE(0x03f0, 0x0121) }
+DEVICE(hp4x, HP4X_IDS);
 /* Libtransistor USB console */
 #define LIBTRANSISTOR_IDS()			\
 	{ USB_DEVICE(0x1209, 0x8b00) }
@@ -132,6 +136,7 @@ static struct usb_serial_driver * const serial_drivers[] = {
 	&funsoft_device,
 	&google_device,
 	&kaufmann_device,
+	&hp4x_device,
 	&libtransistor_device,
 	&moto_modem_device,
 	&motorola_tetra_device,
@@ -151,6 +156,7 @@ static const struct usb_device_id id_table[] = {
 	FUNSOFT_IDS(),
 	GOOGLE_IDS(),
 	KAUFMANN_IDS(),
+	HP4X_IDS(),
 	LIBTRANSISTOR_IDS(),
 	MOTO_IDS(),
 	MOTOROLA_TETRA_IDS(),

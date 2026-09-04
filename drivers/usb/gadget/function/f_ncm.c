@@ -84,6 +84,8 @@ static inline unsigned ncm_bitrate(struct usb_gadget *g)
 	if (gadget_is_superspeed(g) && g->speed == USB_SPEED_SUPER)
 		return 13 * 1024 * 8 * 1000 * 8;
 	else if (gadget_is_dualspeed(g) && g->speed == USB_SPEED_HIGH)
+	if (!g)
+		return 0;
 		return 13 * 512 * 8 * 1000 * 8;
 	else
 		return 19 *  64 * 1 * 1000 * 8;
@@ -1269,6 +1271,13 @@ parse_ntb:
 	tmp += opts->reserved1;
 	tmp += opts->next_fp_index; /* skip reserved (d)wNextFpIndex */
 	tmp += opts->reserved2;
+		/* walk through NDP */
+		tmp = (__le16 *)(skb->data + ndp_index);
+		if (get_unaligned_le32(tmp) != ncm->ndp_sign) {
+			INFO(port->func.config->cdev, "Wrong NDP SIGN\n");
+			goto err;
+		}
+		tmp += 2;
 
 	ndp_len -= opts->ndp_size;
 	index2 = get_ncm(&tmp, opts->dgram_item_len);
@@ -1296,6 +1305,21 @@ parse_ntb:
 				goto err;
 			}
 		}
+			if (ncm->is_crc) {
+				uint32_t crc, crc2;
+
+				crc = get_unaligned_le32(ntb_ptr +
+							 index + dg_len -
+							 crc_len);
+				crc2 = ~crc32_le(~0,
+						 ntb_ptr + index,
+						 dg_len - crc_len);
+				if (crc != crc2) {
+					INFO(port->func.config->cdev,
+					     "Bad CRC\n");
+					goto err;
+				}
+			}
 
 		index2 = get_ncm(&tmp, opts->dgram_item_len);
 		dg_len2 = get_ncm(&tmp, opts->dgram_item_len);
@@ -1307,6 +1331,8 @@ parse_ntb:
 			if (skb2 == NULL)
 				goto err;
 		}
+			memcpy(skb_put(skb2, dg_len - crc_len),
+			       ntb_ptr + index, dg_len - crc_len);
 
 		if (!skb_pull(skb2, index)) {
 			ret = -EOVERFLOW;
@@ -1470,6 +1496,7 @@ ncm_bind(struct usb_configuration *c, struct usb_function *f)
 		goto netdev_cleanup;
 	}
 	
+	ncm_string_defs[1].s = ncm->ethaddr;
 	us = usb_gstrings_attach(cdev, ncm_strings,
 				 ARRAY_SIZE(ncm_string_defs));
 	if (IS_ERR(us))
@@ -1875,6 +1902,14 @@ static struct usb_function *ncm_alloc(struct usb_function_instance *fi)
 	opts->refcnt++;
 
 	ncm_string_defs[STRING_MAC_IDX].s = ncm->ethaddr;
+	/* export host's Ethernet address in CDC format */
+	status = gether_get_host_addr_cdc(opts->net, ncm->ethaddr,
+				      sizeof(ncm->ethaddr));
+	if (status < 12) { /* strlen("01234567890a") */
+		kfree(ncm);
+		mutex_unlock(&opts->lock);
+		return ERR_PTR(-EINVAL);
+	}
 
 	spin_lock_init(&ncm->lock);
 	ncm_reset_values(ncm);
