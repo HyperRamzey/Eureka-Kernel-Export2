@@ -112,13 +112,13 @@ static inline int ovl_do_rename(struct inode *olddir, struct dentry *olddentry,
 {
 	int err;
 
-	pr_debug("rename2(%pd2, %pd2, 0x%x)\n",
+	pr_debug("rename(%pd2, %pd2, 0x%x)\n",
 		 olddentry, newdentry, flags);
 
 	err = vfs_rename(olddir, olddentry, newdir, newdentry, NULL, flags);
 
 	if (err) {
-		pr_debug("...rename2(%pd2, %pd2, ...) = %i\n",
+		pr_debug("...rename(%pd2, %pd2, ...) = %i\n",
 			 olddentry, newdentry, err);
 	}
 	return err;
@@ -151,6 +151,7 @@ bool ovl_dentry_is_opaque(struct dentry *dentry);
 void ovl_dentry_set_opaque(struct dentry *dentry, bool opaque);
 bool ovl_is_whiteout(struct dentry *dentry);
 const struct cred *ovl_override_creds(struct super_block *sb);
+void ovl_revert_creds(const struct cred *oldcred);
 void ovl_dentry_update(struct dentry *dentry, struct dentry *upperdentry);
 struct dentry *ovl_lookup(struct inode *dir, struct dentry *dentry,
 			  unsigned int flags);

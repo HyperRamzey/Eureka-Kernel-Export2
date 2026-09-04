@@ -45,13 +45,21 @@
 #include <linux/bug.h>
 #include <linux/compiler.h>
 #include <linux/ktime.h>
+#include <linux/irqflags.h>
 
 #include <asm/barrier.h>
 
+#ifndef CONFIG_TINY_RCU
 extern int rcu_expedited; /* for sysctl */
+extern int rcu_normal;    /* also for sysctl */
+#endif /* #ifndef CONFIG_TINY_RCU */
 
 #ifdef CONFIG_TINY_RCU
 /* Tiny RCU doesn't expedite, as its purpose in life is instead to be tiny. */
+static inline bool rcu_gp_is_normal(void)  /* Internal RCU use. */
+{
+	return true;
+}
 static inline bool rcu_gp_is_expedited(void)  /* Internal RCU use. */
 {
 	return false;
@@ -65,6 +73,7 @@ static inline void rcu_unexpedite_gp(void)
 {
 }
 #else /* #ifdef CONFIG_TINY_RCU */
+bool rcu_gp_is_normal(void);     /* Internal RCU use. */
 bool rcu_gp_is_expedited(void);  /* Internal RCU use. */
 void rcu_expedite_gp(void);
 void rcu_unexpedite_gp(void);
@@ -169,6 +178,9 @@ void call_rcu(struct rcu_head *head,
 
 #endif /* #else #ifdef CONFIG_PREEMPT_RCU */
 
+#ifdef CONFIG_PREEMPT_RT_FULL
+#define call_rcu_bh	call_rcu
+#else
 /**
  * call_rcu_bh() - Queue an RCU for invocation after a quicker grace period.
  * @head: structure to be used for queueing the RCU updates.
@@ -192,6 +204,7 @@ void call_rcu(struct rcu_head *head,
  */
 void call_rcu_bh(struct rcu_head *head,
 		 rcu_callback_t func);
+#endif
 
 /**
  * call_rcu_sched() - Queue an RCU for invocation after sched grace period.
@@ -292,6 +305,11 @@ void synchronize_rcu(void);
  * types of kernel builds, the rcu_read_lock() nesting depth is unknowable.
  */
 #define rcu_preempt_depth() (current->rcu_read_lock_nesting)
+#ifndef CONFIG_PREEMPT_RT_FULL
+#define sched_rcu_preempt_depth()	rcu_preempt_depth()
+#else
+static inline int sched_rcu_preempt_depth(void) { return 0; }
+#endif
 
 #else /* #ifdef CONFIG_PREEMPT_RCU */
 
@@ -315,17 +333,24 @@ static inline int rcu_preempt_depth(void)
 	return 0;
 }
 
+#define sched_rcu_preempt_depth()	rcu_preempt_depth()
+
 #endif /* #else #ifdef CONFIG_PREEMPT_RCU */
 
 /* Internal to kernel */
 void rcu_init(void);
-void rcu_end_inkernel_boot(void);
 void rcu_sched_qs(void);
 void rcu_bh_qs(void);
 void rcu_check_callbacks(int user);
 struct notifier_block;
 int rcu_cpu_notify(struct notifier_block *self,
 		   unsigned long action, void *hcpu);
+
+#ifndef CONFIG_TINY_RCU
+void rcu_end_inkernel_boot(void);
+#else /* #ifndef CONFIG_TINY_RCU */
+static inline void rcu_end_inkernel_boot(void) { }
+#endif /* #ifndef CONFIG_TINY_RCU */
 
 #ifdef CONFIG_RCU_STALL_COMMON
 void rcu_sysrq_start(void);
@@ -487,7 +512,14 @@ extern struct lockdep_map rcu_callback_map;
 int debug_lockdep_rcu_enabled(void);
 
 int rcu_read_lock_held(void);
+#ifdef CONFIG_PREEMPT_RT_FULL
+static inline int rcu_read_lock_bh_held(void)
+{
+	return rcu_read_lock_held();
+}
+#else
 int rcu_read_lock_bh_held(void);
+#endif
 
 /**
  * rcu_read_lock_sched_held() - might we be in RCU-sched read-side critical section?
@@ -497,14 +529,7 @@ int rcu_read_lock_bh_held(void);
  * CONFIG_DEBUG_LOCK_ALLOC, this assumes we are in an RCU-sched read-side
  * critical section unless it can prove otherwise.
  */
-#ifdef CONFIG_PREEMPT_COUNT
 int rcu_read_lock_sched_held(void);
-#else /* #ifdef CONFIG_PREEMPT_COUNT */
-static inline int rcu_read_lock_sched_held(void)
-{
-	return 1;
-}
-#endif /* #else #ifdef CONFIG_PREEMPT_COUNT */
 
 #else /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
@@ -521,18 +546,10 @@ static inline int rcu_read_lock_bh_held(void)
 	return 1;
 }
 
-#ifdef CONFIG_PREEMPT_COUNT
 static inline int rcu_read_lock_sched_held(void)
 {
-	return preempt_count() != 0 || irqs_disabled();
+	return !preemptible();
 }
-#else /* #ifdef CONFIG_PREEMPT_COUNT */
-static inline int rcu_read_lock_sched_held(void)
-{
-	return 1;
-}
-#endif /* #else #ifdef CONFIG_PREEMPT_COUNT */
-
 #endif /* #else #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
 #ifdef CONFIG_PROVE_RCU
@@ -933,10 +950,14 @@ static inline void rcu_read_unlock(void)
 static inline void rcu_read_lock_bh(void)
 {
 	local_bh_disable();
+#ifdef CONFIG_PREEMPT_RT_FULL
+	rcu_read_lock();
+#else
 	__acquire(RCU_BH);
 	rcu_lock_acquire(&rcu_bh_lock_map);
 	RCU_LOCKDEP_WARN(!rcu_is_watching(),
 			 "rcu_read_lock_bh() used illegally while idle");
+#endif
 }
 
 /*
@@ -946,10 +967,14 @@ static inline void rcu_read_lock_bh(void)
  */
 static inline void rcu_read_unlock_bh(void)
 {
+#ifdef CONFIG_PREEMPT_RT_FULL
+	rcu_read_unlock();
+#else
 	RCU_LOCKDEP_WARN(!rcu_is_watching(),
 			 "rcu_read_unlock_bh() used illegally while idle");
 	rcu_lock_release(&rcu_bh_lock_map);
 	__release(RCU_BH);
+#endif
 	local_bh_enable();
 }
 

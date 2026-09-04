@@ -268,6 +268,11 @@ static void __fw_free_buf(struct kref *ref)
 static void fw_free_buf(struct firmware_buf *buf)
 {
 	struct firmware_cache *fwc = buf->fwc;
+	if (!fwc) {
+		kfree_const(buf->fw_id);
+		kfree(buf);
+		return;
+	}
 	spin_lock(&fwc->lock);
 	if (!kref_put(&buf->ref, __fw_free_buf))
 		spin_unlock(&fwc->lock);
@@ -1633,7 +1638,7 @@ static void device_uncache_fw_images_work(struct work_struct *work)
  */
 static void device_uncache_fw_images_delay(unsigned long delay)
 {
-	queue_delayed_work(system_power_efficient_wq, &fw_cache.work,
+	queue_delayed_work(system_wq, &fw_cache.work,
 			   msecs_to_jiffies(delay));
 }
 

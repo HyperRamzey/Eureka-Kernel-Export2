@@ -5,6 +5,8 @@
 #include <linux/rcupdate.h>
 #include <linux/vmalloc.h>
 #include <linux/reboot.h>
+#include <linux/suspend.h>
+#include <linux/exynos-ss.h>
 
 /*
  *	Notifier list for kernel code which wants to be called
@@ -22,6 +24,10 @@ static int notifier_chain_register(struct notifier_block **nl,
 		struct notifier_block *n)
 {
 	while ((*nl) != NULL) {
+		if (unlikely((*nl) == n)) {
+			WARN(1, "double register detected");
+			return 0;
+		}
 		if (n->priority > (*nl)->priority)
 			break;
 		nl = &((*nl)->next);
@@ -90,7 +96,11 @@ static int notifier_call_chain(struct notifier_block **nl,
 			continue;
 		}
 #endif
+		if (val == PM_SUSPEND_PREPARE || val == PM_POST_SUSPEND)
+			exynos_ss_suspend(nb->notifier_call, NULL, ESS_FLAG_IN);
 		ret = nb->notifier_call(nb, val, v);
+		if (val == PM_SUSPEND_PREPARE || val == PM_POST_SUSPEND)
+			exynos_ss_suspend(nb->notifier_call, NULL, ESS_FLAG_OUT);
 
 		if (nr_calls)
 			(*nr_calls)++;

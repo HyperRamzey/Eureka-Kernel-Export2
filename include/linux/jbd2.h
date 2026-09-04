@@ -47,7 +47,7 @@
 /*
  * The default maximum commit age, in seconds.
  */
-#define JBD2_DEFAULT_MAX_COMMIT_AGE 5
+#define JBD2_DEFAULT_MAX_COMMIT_AGE 120
 
 #ifdef CONFIG_JBD2_DEBUG
 /*
@@ -352,32 +352,56 @@ static inline struct journal_head *bh2jh(struct buffer_head *bh)
 
 static inline void jbd_lock_bh_state(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	bit_spin_lock(BH_State, &bh->b_state);
+#else
+	spin_lock(&bh->b_state_lock);
+#endif
 }
 
 static inline int jbd_trylock_bh_state(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	return bit_spin_trylock(BH_State, &bh->b_state);
+#else
+	return spin_trylock(&bh->b_state_lock);
+#endif
 }
 
 static inline int jbd_is_locked_bh_state(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	return bit_spin_is_locked(BH_State, &bh->b_state);
+#else
+	return spin_is_locked(&bh->b_state_lock);
+#endif
 }
 
 static inline void jbd_unlock_bh_state(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	bit_spin_unlock(BH_State, &bh->b_state);
+#else
+	spin_unlock(&bh->b_state_lock);
+#endif
 }
 
 static inline void jbd_lock_bh_journal_head(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	bit_spin_lock(BH_JournalHead, &bh->b_state);
+#else
+	spin_lock(&bh->b_journal_head_lock);
+#endif
 }
 
 static inline void jbd_unlock_bh_journal_head(struct buffer_head *bh)
 {
+#ifndef CONFIG_PREEMPT_RT_BASE
 	bit_spin_unlock(BH_JournalHead, &bh->b_state);
+#else
+	spin_unlock(&bh->b_journal_head_lock);
+#endif
 }
 
 #define J_ASSERT(assert)	BUG_ON(!(assert))
@@ -1113,6 +1137,10 @@ JBD2_FEATURE_INCOMPAT_FUNCS(csum3,		CSUM_V3)
 						 * data write error in ordered
 						 * mode */
 #define JBD2_REC_ERR	0x080	/* The errno in the sb has been recorded */
+#ifdef CONFIG_JOURNAL_DATA_TAG
+#define JBD2_JOURNAL_TAG       0x800   /* Journaling is working in journal
+					* data tagging mode */
+#endif
 
 /*
  * Function declarations for the journaling transaction and buffer

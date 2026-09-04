@@ -53,6 +53,8 @@ static LIST_HEAD(deferred_probe_pending_list);
 static LIST_HEAD(deferred_probe_active_list);
 static struct workqueue_struct *deferred_wq;
 static atomic_t deferred_trigger_count = ATOMIC_INIT(0);
+static bool driver_deferred_probe_enable = false;
+static void driver_deferred_probe_trigger(void);
 
 /*
  * deferred_probe_work_func() - Retry probing devices in the active list.
@@ -106,6 +108,11 @@ static void deferred_probe_work_func(struct work_struct *work)
 		put_device(dev);
 	}
 	mutex_unlock(&deferred_probe_mutex);
+
+	/* Keep going if probe deferral is needed after late_initcall */
+	if (driver_deferred_probe_enable &&
+	    !list_empty(&deferred_probe_pending_list))
+		driver_deferred_probe_trigger();
 }
 static DECLARE_WORK(deferred_probe_work, deferred_probe_work_func);
 
@@ -129,7 +136,6 @@ void driver_deferred_probe_del(struct device *dev)
 	mutex_unlock(&deferred_probe_mutex);
 }
 
-static bool driver_deferred_probe_enable = false;
 /**
  * driver_deferred_probe_trigger() - Kick off re-probing deferred devices
  *
@@ -204,6 +210,8 @@ static void driver_bound(struct device *dev)
 		 __func__, dev_name(dev));
 
 	klist_add_tail(&dev->p->knode_driver, &dev->driver->p->klist_devices);
+
+	device_pm_check_callbacks(dev);
 
 	/*
 	 * Make sure the device is no longer in one of the deferred lists and
@@ -693,6 +701,7 @@ static void __device_release_driver(struct device *dev)
 			dev->pm_domain->dismiss(dev);
 
 		klist_remove(&dev->p->knode_driver);
+		device_pm_check_callbacks(dev);
 		if (dev->bus)
 			blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 						     BUS_NOTIFY_UNBOUND_DRIVER,

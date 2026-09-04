@@ -4,6 +4,8 @@
  * Everything to do with buffer_heads.
  */
 
+/* @fs.sec -- c853aa20d912cceb3e932a91b6bc8aa3 -- */
+
 #ifndef _LINUX_BUFFER_HEAD_H
 #define _LINUX_BUFFER_HEAD_H
 
@@ -36,7 +38,12 @@ enum bh_state_bits {
 	BH_Quiet,	/* Buffer Error Prinks to be quiet */
 	BH_Meta,	/* Buffer contains metadata */
 	BH_Prio,	/* Buffer should be submitted with REQ_PRIO */
+	BH_Sync_Flush,
 	BH_Defer_Completion, /* Defer AIO completion to workqueue */
+#ifdef CONFIG_JOURNAL_DATA_TAG
+	BH_Journal,     /* Buffer contains journal data */
+	BH_Jmeta,       /* Buffer contains metadata */
+#endif
 
 	BH_PrivateStart,/* not a state bit, but the first bit available
 			 * for private allocation by other entities
@@ -75,7 +82,49 @@ struct buffer_head {
 	struct address_space *b_assoc_map;	/* mapping this buffer is
 						   associated with */
 	atomic_t b_count;		/* users using this buffer_head */
+#ifdef CONFIG_PREEMPT_RT_BASE
+	spinlock_t b_uptodate_lock;
+#if IS_ENABLED(CONFIG_JBD2)
+	spinlock_t b_state_lock;
+	spinlock_t b_journal_head_lock;
+#endif
+#endif
 };
+
+static inline unsigned long bh_uptodate_lock_irqsave(struct buffer_head *bh)
+{
+	unsigned long flags;
+
+#ifndef CONFIG_PREEMPT_RT_BASE
+	local_irq_save(flags);
+	bit_spin_lock(BH_Uptodate_Lock, &bh->b_state);
+#else
+	spin_lock_irqsave(&bh->b_uptodate_lock, flags);
+#endif
+	return flags;
+}
+
+static inline void
+bh_uptodate_unlock_irqrestore(struct buffer_head *bh, unsigned long flags)
+{
+#ifndef CONFIG_PREEMPT_RT_BASE
+	bit_spin_unlock(BH_Uptodate_Lock, &bh->b_state);
+	local_irq_restore(flags);
+#else
+	spin_unlock_irqrestore(&bh->b_uptodate_lock, flags);
+#endif
+}
+
+static inline void buffer_head_init_locks(struct buffer_head *bh)
+{
+#ifdef CONFIG_PREEMPT_RT_BASE
+	spin_lock_init(&bh->b_uptodate_lock);
+#if IS_ENABLED(CONFIG_JBD2)
+	spin_lock_init(&bh->b_state_lock);
+	spin_lock_init(&bh->b_journal_head_lock);
+#endif
+#endif
+}
 
 /*
  * macro tricks to expand the set_buffer_foo(), clear_buffer_foo()
@@ -113,7 +162,6 @@ static inline int test_clear_buffer_##name(struct buffer_head *bh)	\
  * of the form "mark_buffer_foo()".  These are higher-level functions which
  * do something in addition to setting a b_state bit.
  */
-BUFFER_FNS(Uptodate, uptodate)
 BUFFER_FNS(Dirty, dirty)
 TAS_BUFFER_FNS(Dirty, dirty)
 BUFFER_FNS(Lock, locked)
@@ -129,7 +177,47 @@ BUFFER_FNS(Write_EIO, write_io_error)
 BUFFER_FNS(Unwritten, unwritten)
 BUFFER_FNS(Meta, meta)
 BUFFER_FNS(Prio, prio)
+BUFFER_FNS(Sync_Flush, sync_flush)
 BUFFER_FNS(Defer_Completion, defer_completion)
+#ifdef CONFIG_JOURNAL_DATA_TAG
+BUFFER_FNS(Journal, journal)
+BUFFER_FNS(Jmeta, jmeta)
+#endif
+
+static __always_inline void set_buffer_uptodate(struct buffer_head *bh)
+{
+	/*
+	 * If somebody else already set this uptodate, they will
+	 * have done the memory barrier, and a reader will thus
+	 * see *some* valid buffer state.
+	 *
+	 * Any other serialization (with IO errors or whatever that
+	 * might clear the bit) has to come from other state (eg BH_Lock).
+	 */
+	if (test_bit(BH_Uptodate, &bh->b_state))
+		return;
+
+	/*
+	 * make it consistent with folio_mark_uptodate
+	 * pairs with smp_load_acquire in buffer_uptodate
+	 */
+	smp_mb__before_atomic();
+	set_bit(BH_Uptodate, &bh->b_state);
+}
+
+static __always_inline void clear_buffer_uptodate(struct buffer_head *bh)
+{
+	clear_bit(BH_Uptodate, &bh->b_state);
+}
+
+static __always_inline int buffer_uptodate(const struct buffer_head *bh)
+{
+	/*
+	 * make it consistent with folio_test_uptodate
+	 * pairs with smp_mb__before_atomic in set_buffer_uptodate
+	 */
+	return (smp_load_acquire(&bh->b_state) & (1UL << BH_Uptodate)) != 0;
+}
 
 #define bh_offset(bh)		((unsigned long)(bh)->b_data & ~PAGE_MASK)
 
@@ -149,6 +237,7 @@ void buffer_check_dirty_writeback(struct page *page,
  */
 
 void mark_buffer_dirty(struct buffer_head *bh);
+void mark_buffer_dirty_sync(struct buffer_head *bh);
 void init_buffer(struct buffer_head *, bh_end_io_t *, void *);
 void touch_buffer(struct buffer_head *bh);
 void set_bh_page(struct buffer_head *bh,
@@ -164,6 +253,7 @@ void end_buffer_async_write(struct buffer_head *bh, int uptodate);
 
 /* Things to do with buffers at mapping->private_list */
 void mark_buffer_dirty_inode(struct buffer_head *bh, struct inode *inode);
+void mark_buffer_dirty_inode_sync(struct buffer_head *bh, struct inode *inode);
 int inode_has_buffers(struct inode *);
 void invalidate_inode_buffers(struct inode *);
 int remove_inode_buffers(struct inode *inode);

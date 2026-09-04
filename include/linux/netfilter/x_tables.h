@@ -4,6 +4,7 @@
 
 #include <linux/netdevice.h>
 #include <linux/static_key.h>
+#include <linux/locallock.h>
 #include <uapi/linux/netfilter/x_tables.h>
 
 /**
@@ -135,6 +136,7 @@ struct xt_match {
 
 	const char *table;
 	unsigned int matchsize;
+	unsigned int usersize;
 #ifdef CONFIG_COMPAT
 	unsigned int compatsize;
 #endif
@@ -175,6 +177,7 @@ struct xt_target {
 
 	const char *table;
 	unsigned int targetsize;
+	unsigned int usersize;
 #ifdef CONFIG_COMPAT
 	unsigned int compatsize;
 #endif
@@ -254,6 +257,13 @@ int xt_check_match(struct xt_mtchk_param *, unsigned int size, u_int8_t proto,
 int xt_check_target(struct xt_tgchk_param *, unsigned int size, u_int8_t proto,
 		    bool inv_proto);
 
+int xt_match_to_user(const struct xt_entry_match *m,
+		     struct xt_entry_match __user *u);
+int xt_target_to_user(const struct xt_entry_target *t,
+		      struct xt_entry_target __user *u);
+int xt_data_to_user(void __user *dst, const void *src,
+		    int usersize, int size);
+
 void *xt_copy_counters_from_user(const void __user *user, unsigned int len,
 				 struct xt_counters_info *info, bool compat);
 
@@ -295,6 +305,8 @@ void xt_free_table_info(struct xt_table_info *info);
  */
 DECLARE_PER_CPU(seqcount_t, xt_recseq);
 
+DECLARE_LOCAL_IRQ_LOCK(xt_write_lock);
+
 /* xt_tee_enabled - true if x_tables needs to handle reentrancy
  *
  * Enabled if current ip(6)tables ruleset has at least one -j TEE rule.
@@ -314,6 +326,9 @@ extern struct static_key xt_tee_enabled;
 static inline unsigned int xt_write_recseq_begin(void)
 {
 	unsigned int addend;
+
+	/* RT protection */
+	local_lock(xt_write_lock);
 
 	/*
 	 * Low order bit of sequence is set if we already
@@ -345,6 +360,7 @@ static inline void xt_write_recseq_end(unsigned int addend)
 	/* this is kind of a write_seqcount_end(), but addend is 0 or 1 */
 	smp_wmb();
 	__this_cpu_add(xt_recseq.sequence, addend);
+	local_unlock(xt_write_lock);
 }
 
 /*

@@ -52,6 +52,8 @@ extern nodemask_t cpuset_mems_allowed(struct task_struct *p);
 #define cpuset_current_mems_allowed (current->mems_allowed)
 void cpuset_init_current_mems_allowed(void);
 int cpuset_nodemask_valid_mems_allowed(nodemask_t *nodemask);
+extern int cpuset_task_is_boosted(struct task_struct *p);
+extern int cpuset_task_is_pinned(struct task_struct *p);
 
 extern int __cpuset_node_allowed(int node, gfp_t gfp_mask);
 
@@ -141,6 +143,9 @@ static inline void set_mems_allowed(nodemask_t nodemask)
 	local_irq_restore(flags);
 	task_unlock(current);
 }
+
+void do_hp_cpuset(void);
+void do_lp_cpuset(void);
 
 #else /* !CONFIG_CPUSETS */
 

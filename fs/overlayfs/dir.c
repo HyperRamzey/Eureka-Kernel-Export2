@@ -657,7 +657,7 @@ static int ovl_do_remove(struct dentry *dentry, bool is_dir)
 
 		err = ovl_remove_and_whiteout(dentry, is_dir);
 
-		revert_creds(old_cred);
+		ovl_revert_creds(old_cred);
 	}
 out_drop_write:
 	ovl_drop_write(dentry);
@@ -900,8 +900,7 @@ out_dput_old:
 out_unlock:
 	unlock_rename(new_upperdir, old_upperdir);
 out_revert_creds:
-	if (old_opaque || new_opaque)
-		revert_creds(old_cred);
+	ovl_revert_creds(old_cred);
 out_drop_write:
 	ovl_drop_write(old);
 out:
@@ -915,7 +914,7 @@ const struct inode_operations ovl_dir_inode_operations = {
 	.symlink	= ovl_symlink,
 	.unlink		= ovl_unlink,
 	.rmdir		= ovl_rmdir,
-	.rename2	= ovl_rename2,
+	.rename		= ovl_rename2,
 	.link		= ovl_link,
 	.setattr	= ovl_setattr,
 	.create		= ovl_create,

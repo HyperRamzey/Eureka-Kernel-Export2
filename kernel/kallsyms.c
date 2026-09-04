@@ -23,9 +23,17 @@
 #include <linux/mm.h>
 #include <linux/ctype.h>
 #include <linux/slab.h>
+#include <linux/filter.h>
 #include <linux/compiler.h>
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+#include <linux/sec_debug.h>
+#endif
 
 #include <asm/sections.h>
+
+#ifdef CONFIG_SEC_DEBUG
+#include <linux/sec_debug.h>
+#endif
 
 #ifdef CONFIG_KALLSYMS_ALL
 #define all_var 1
@@ -44,13 +52,37 @@ extern const u8 kallsyms_names[] __weak;
  * Tell the compiler that the count isn't in the small data section if the arch
  * has one (eg: FRV).
  */
-extern const unsigned long kallsyms_num_syms
+extern const unsigned int kallsyms_num_syms
 __attribute__((weak, section(".rodata")));
 
 extern const u8 kallsyms_token_table[] __weak;
 extern const u16 kallsyms_token_index[] __weak;
 
-extern const unsigned long kallsyms_markers[] __weak;
+extern const unsigned int kallsyms_markers[] __weak;
+
+#ifdef CONFIG_SEC_DUMP_SUMMARY
+void sec_debug_summary_set_kallsyms_info(struct sec_debug_summary *summary_info)
+{
+	summary_info->ksyms.addresses_pa = __pa(kallsyms_addresses);
+	summary_info->ksyms.relative_base = 0x0;
+	summary_info->ksyms.offsets_pa = 0x0;
+
+	summary_info->ksyms.names_pa = __pa(kallsyms_names);
+	summary_info->ksyms.num_syms = kallsyms_num_syms;
+	summary_info->ksyms.token_table_pa = __pa(kallsyms_token_table);
+	summary_info->ksyms.token_index_pa = __pa(kallsyms_token_index);
+	summary_info->ksyms.markers_pa = __pa(kallsyms_markers);
+
+	summary_info->ksyms.sect.sinittext = (uint64_t)_sinittext;
+	summary_info->ksyms.sect.einittext = (uint64_t)_einittext;
+	summary_info->ksyms.sect.stext = (uint64_t)_stext;
+	summary_info->ksyms.sect.etext = (uint64_t)_etext;
+	summary_info->ksyms.sect.end = (uint64_t)_end;
+
+	summary_info->ksyms.kallsyms_all = all_var;
+	summary_info->ksyms.magic = SEC_DEBUG_SUMMARY_MAGIC1;
+}
+#endif
 
 static inline int is_kernel_inittext(unsigned long addr)
 {
@@ -62,7 +94,7 @@ static inline int is_kernel_inittext(unsigned long addr)
 
 static inline int is_kernel_text(unsigned long addr)
 {
-	if ((addr >= (unsigned long)_stext && addr <= (unsigned long)_etext) ||
+	if ((addr >= (unsigned long)_text && addr <= (unsigned long)_etext) ||
 	    arch_is_kernel_text(addr))
 		return 1;
 	return in_gate_area_no_mm(addr);
@@ -70,7 +102,7 @@ static inline int is_kernel_text(unsigned long addr)
 
 static inline int is_kernel(unsigned long addr)
 {
-	if (addr >= (unsigned long)_stext && addr <= (unsigned long)_end)
+	if (addr >= (unsigned long)_text && addr <= (unsigned long)_end)
 		return 1;
 	return in_gate_area_no_mm(addr);
 }
@@ -278,8 +310,8 @@ int kallsyms_lookup_size_offset(unsigned long addr, unsigned long *symbolsize,
 	char namebuf[KSYM_NAME_LEN];
 	if (is_ksym_addr(addr))
 		return !!get_symbol_pos(addr, symbolsize, offset);
-
-	return !!module_address_lookup(addr, symbolsize, offset, NULL, namebuf);
+	return !!module_address_lookup(addr, symbolsize, offset, NULL, namebuf) ||
+	       !!__bpf_address_lookup(addr, symbolsize, offset, namebuf);
 }
 
 /*
@@ -294,6 +326,8 @@ const char *kallsyms_lookup(unsigned long addr,
 			    unsigned long *offset,
 			    char **modname, char *namebuf)
 {
+	const char *ret;
+
 	namebuf[KSYM_NAME_LEN - 1] = 0;
 	namebuf[0] = 0;
 
@@ -309,9 +343,13 @@ const char *kallsyms_lookup(unsigned long addr,
 		return namebuf;
 	}
 
-	/* See if it's in a module. */
-	return module_address_lookup(addr, symbolsize, offset, modname,
-				     namebuf);
+	/* See if it's in a module or a BPF JITed image. */
+	ret = module_address_lookup(addr, symbolsize, offset,
+				    modname, namebuf);
+	if (!ret)
+		ret = bpf_address_lookup(addr, symbolsize,
+					 offset, modname, namebuf);
+	return ret;
 }
 
 int lookup_symbol_name(unsigned long addr, char *symname)
@@ -447,6 +485,7 @@ EXPORT_SYMBOL(__print_symbol);
 /* To avoid using get_symbol_offset for every symbol, we carry prefix along. */
 struct kallsym_iter {
 	loff_t pos;
+	loff_t pos_mod_end;
 	unsigned long value;
 	unsigned int nameoff; /* If iterating in core kernel symbols. */
 	char type;
@@ -457,11 +496,25 @@ struct kallsym_iter {
 
 static int get_ksymbol_mod(struct kallsym_iter *iter)
 {
-	if (module_get_kallsym(iter->pos - kallsyms_num_syms, &iter->value,
-				&iter->type, iter->name, iter->module_name,
-				&iter->exported) < 0)
+	int ret = module_get_kallsym(iter->pos - kallsyms_num_syms,
+				     &iter->value, &iter->type,
+				     iter->name, iter->module_name,
+				     &iter->exported);
+	if (ret < 0) {
+		iter->pos_mod_end = iter->pos;
 		return 0;
+	}
+
 	return 1;
+}
+
+static int get_ksymbol_bpf(struct kallsym_iter *iter)
+{
+	iter->module_name[0] = '\0';
+	iter->exported = 0;
+	return bpf_get_kallsym(iter->pos - iter->pos_mod_end,
+			       &iter->value, &iter->type,
+			       iter->name) < 0 ? 0 : 1;
 }
 
 /* Returns space to next name. */
@@ -484,16 +537,30 @@ static void reset_iter(struct kallsym_iter *iter, loff_t new_pos)
 	iter->name[0] = '\0';
 	iter->nameoff = get_symbol_offset(new_pos);
 	iter->pos = new_pos;
+	if (new_pos == 0)
+		iter->pos_mod_end = 0;
+}
+
+static int update_iter_mod(struct kallsym_iter *iter, loff_t pos)
+{
+	iter->pos = pos;
+
+	if (iter->pos_mod_end > 0 &&
+	    iter->pos_mod_end < iter->pos)
+		return get_ksymbol_bpf(iter);
+
+	if (!get_ksymbol_mod(iter))
+		return get_ksymbol_bpf(iter);
+
+	return 1;
 }
 
 /* Returns false if pos at or past end of file. */
 static int update_iter(struct kallsym_iter *iter, loff_t pos)
 {
 	/* Module symbols can be accessed randomly. */
-	if (pos >= kallsyms_num_syms) {
-		iter->pos = pos;
-		return get_ksymbol_mod(iter);
-	}
+	if (pos >= kallsyms_num_syms)
+		return update_iter_mod(iter, pos);
 
 	/* If we're not on the desired position, reset to new position. */
 	if (pos != iter->pos)

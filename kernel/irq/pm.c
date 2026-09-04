@@ -14,6 +14,8 @@
 
 #include "internals.h"
 
+static bool pm_in_suspend;
+
 bool irq_pm_check_wakeup(struct irq_desc *desc)
 {
 	if (irqd_is_wakeup_armed(&desc->irq_data)) {
@@ -24,6 +26,8 @@ bool irq_pm_check_wakeup(struct irq_desc *desc)
 		pm_system_irq_wakeup(irq_desc_get_irq(desc));
 		return true;
 	}
+	if (pm_in_suspend && irqd_is_wakeup_set(&desc->irq_data))
+		pm_system_irq_wakeup(irq_desc_get_irq(desc));
 	return false;
 }
 
@@ -176,6 +180,26 @@ static void resume_irqs(bool want_early)
 }
 
 /**
+ * rearm_wake_irq - rearm a wakeup interrupt line after signaling wakeup
+ * @irq: Interrupt to rearm
+ */
+void rearm_wake_irq(unsigned int irq)
+{
+	unsigned long flags;
+	struct irq_desc *desc = irq_get_desc_buslock(irq, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
+
+	if (!desc || !(desc->istate & IRQS_SUSPENDED) ||
+	    !irqd_is_wakeup_set(&desc->irq_data))
+		return;
+
+	desc->istate &= ~IRQS_SUSPENDED;
+	irqd_set(&desc->irq_data, IRQD_WAKEUP_ARMED);
+	__enable_irq(desc);
+
+	irq_put_desc_busunlock(desc, flags);
+}
+
+/**
  * irq_pm_syscore_ops - enable interrupt lines early
  *
  * Enable all interrupt lines with %IRQF_EARLY_RESUME set.
@@ -189,8 +213,20 @@ static struct syscore_ops irq_pm_syscore_ops = {
 	.resume		= irq_pm_syscore_resume,
 };
 
+static int irq_pm_notify(struct notifier_block *b, unsigned long event, void *p)
+{
+	pm_in_suspend = event == PM_SUSPEND_PREPARE;
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block irq_pm_notifier = {
+	.notifier_call = irq_pm_notify,
+	.priority = INT_MAX
+};
+
 static int __init irq_pm_init_ops(void)
 {
+	BUG_ON(register_pm_notifier(&irq_pm_notifier));
 	register_syscore_ops(&irq_pm_syscore_ops);
 	return 0;
 }

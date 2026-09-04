@@ -59,6 +59,13 @@ extern int hibernation_snapshot(int platform_mode);
 extern int hibernation_restore(int platform_mode);
 extern int hibernation_platform_enter(void);
 
+#ifdef CONFIG_DEBUG_RODATA
+/* kernel/power/snapshot.c */
+extern void enable_restore_image_protection(void);
+#else
+static inline void enable_restore_image_protection(void) {}
+#endif /* CONFIG_DEBUG_RODATA */
+
 #else /* !CONFIG_HIBERNATION */
 
 static inline void hibernate_reserved_size_init(void) {}
@@ -166,11 +173,15 @@ extern void swsusp_show_speed(ktime_t, ktime_t, unsigned int, char *);
 
 #ifdef CONFIG_SUSPEND
 /* kernel/power/suspend.c */
-extern const char *pm_labels[];
+extern const char * const pm_labels[];
 extern const char *pm_states[];
+extern const char *mem_sleep_states[];
+extern suspend_state_t mem_sleep_current;
 
 extern int suspend_devices_and_enter(suspend_state_t state);
 #else /* !CONFIG_SUSPEND */
+#define mem_sleep_current	PM_SUSPEND_ON
+
 static inline int suspend_devices_and_enter(suspend_state_t state)
 {
 	return -ENOSYS;
@@ -188,7 +199,12 @@ static inline void suspend_test_finish(const char *label) {}
 
 #ifdef CONFIG_PM_SLEEP
 /* kernel/power/main.c */
+extern int __pm_notifier_call_chain(unsigned long val, int nr_to_call,
+				    int *nr_calls);
 extern int pm_notifier_call_chain(unsigned long val);
+#ifdef CONFIG_SEC_PM_DEBUG
+extern void *pm_notifier_call_chain_get_callback(int nr_calls);
+#endif /* CONFIG_SEC_PM_DEBUG */
 #endif
 
 #ifdef CONFIG_HIGHMEM

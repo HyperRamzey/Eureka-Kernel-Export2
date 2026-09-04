@@ -59,6 +59,7 @@ extern char * strchr(const char *,int);
 #ifndef __HAVE_ARCH_STRCHRNUL
 extern char * strchrnul(const char *,int);
 #endif
+extern char * strnchrnul(const char *, size_t, int);
 #ifndef __HAVE_ARCH_STRNCHR
 extern char * strnchr(const char *, size_t, int);
 #endif
@@ -171,6 +172,18 @@ static inline int strtobool(const char *s, bool *res)
 	return kstrtobool(s, res);
 }
 
+int match_string(const char * const *array, size_t n, const char *string);
+int __sysfs_match_string(const char * const *array, size_t n, const char *s);
+
+/**
+ * sysfs_match_string - matches given string in an array
+ * @_a: array of strings
+ * @_s: string to match with
+ *
+ * Helper for __sysfs_match_string(). Calculates the size of @a automatically.
+ */
+#define sysfs_match_string(_a, _s) __sysfs_match_string(_a, ARRAY_SIZE(_a), _s)
+
 #ifdef CONFIG_BINARY_PRINTF
 int vbin_printf(u32 *bin_buf, size_t size, const char *fmt, va_list args);
 int bstr_printf(char *buf, size_t size, const char *fmt, const u32 *bin_buf);
@@ -204,4 +217,36 @@ static inline const char *kbasename(const char *path)
 	return tail ? tail + 1 : path;
 }
 
+/*
+ * Replace some common string helpers with faster alternatives when one of the
+ * arguments is a constant (i.e., literal string). This uses strlen instead of
+ * sizeof for calculating the string length in order to silence compiler
+ * warnings that may arise due to what the compiler thinks is incorrect sizeof
+ * usage. The strlen calls on constants are folded into scalar values at compile
+ * time, so performance is not reduced by using strlen.
+ */
+#define strcpy(dest, src)							\
+	__builtin_choose_expr(__builtin_constant_p(src),			\
+		memcpy((dest), (src), strlen(src) + 1),				\
+		(strcpy)((dest), (src)))
+
+#define strcat(dest, src)							\
+	__builtin_choose_expr(__builtin_constant_p(src),			\
+		({								\
+			memcpy((dest) + strlen(dest), (src), strlen(src) + 1);	\
+			(dest);							\
+		}),								\
+		(strcat)((dest), (src)))
+
+#define strcmp(left, right)							\
+	__builtin_choose_expr(__builtin_constant_p(left),			\
+		__builtin_choose_expr(__builtin_constant_p(right),		\
+			(strcmp)((left), (right)),				\
+			memcmp((left), (right), strlen(left) + 1)),		\
+		__builtin_choose_expr(__builtin_constant_p(right),		\
+			memcmp((left), (right), strlen(right) + 1),		\
+			(strcmp)((left), (right))))
+
+void memcpy_and_pad(void *dest, size_t dest_len, const void *src, size_t count,
+		    int pad);
 #endif /* _LINUX_STRING_H_ */

@@ -78,7 +78,7 @@ static inline void decrement_wakelocks_number(void) {}
 
 #ifdef CONFIG_PM_WAKELOCKS_GC
 #define WL_GC_COUNT_MAX	100
-#define WL_GC_TIME_SEC	300
+#define WL_GC_TIME_SEC	30 /* default : 300s */
 
 static void __wakelocks_gc(struct work_struct *work);
 static LIST_HEAD(wakelocks_lru_list);
@@ -131,10 +131,32 @@ static void __wakelocks_gc(struct work_struct *work)
 
 static void wakelocks_gc(void)
 {
+	bool expedite;
+	int cpu = get_cpu();
+
+	/*
+	 * If the current CPU isn't occupied, go ahead and
+	 * garbage collect inactive wakelocks.
+	 */
+	expedite = idle_cpu(cpu);
+
+	put_cpu();
+
+	if (expedite)
+		goto do_gc;
+
+	/*
+	 * If our CPU is busy, allow wakelocks to
+	 * accumulate before attempting to garbage collect.
+	 * If by the time we register WL_GC_COUNT_MAX
+	 * wakelocks and the current CPU is still busy,
+	 * run the garbage collecton anyway.
+	 */
 	if (++wakelocks_gc_count <= WL_GC_COUNT_MAX)
 		return;
 
 	schedule_work(&wakelock_work);
+do_gc:
 }
 #else /* !CONFIG_PM_WAKELOCKS_GC */
 static inline void wakelocks_lru_add(struct wakelock *wl) {}
@@ -183,6 +205,7 @@ static struct wakelock *wakelock_lookup_add(const char *name, size_t len,
 		return ERR_PTR(-ENOMEM);
 	}
 	wl->ws.name = wl->name;
+	wl->ws.last_time = ktime_get();
 	wakeup_source_add(&wl->ws);
 	rb_link_node(&wl->node, parent, node);
 	rb_insert_color(&wl->node, &wakelocks_tree);
@@ -198,9 +221,6 @@ int pm_wake_lock(const char *buf)
 	u64 timeout_ns = 0;
 	size_t len;
 	int ret = 0;
-
-	if (!capable(CAP_BLOCK_SUSPEND))
-		return -EPERM;
 
 	while (*str && !isspace(*str))
 		str++;
@@ -229,7 +249,7 @@ int pm_wake_lock(const char *buf)
 		do_div(timeout_ms, NSEC_PER_MSEC);
 		__pm_wakeup_event(&wl->ws, timeout_ms);
 	} else {
-		__pm_stay_awake(&wl->ws);
+		__pm_wakeup_event(&wl->ws, 500);
 	}
 
 	wakelocks_lru_most_recent(wl);
@@ -244,9 +264,6 @@ int pm_wake_unlock(const char *buf)
 	struct wakelock *wl;
 	size_t len;
 	int ret = 0;
-
-	if (!capable(CAP_BLOCK_SUSPEND))
-		return -EPERM;
 
 	len = strlen(buf);
 	if (!len)

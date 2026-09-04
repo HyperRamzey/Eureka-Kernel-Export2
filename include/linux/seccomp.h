@@ -29,19 +29,13 @@ struct seccomp {
 };
 
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
-extern int __secure_computing(void);
-static inline int secure_computing(void)
+extern int __secure_computing(const struct seccomp_data *sd);
+static inline int secure_computing(const struct seccomp_data *sd)
 {
 	if (unlikely(test_thread_flag(TIF_SECCOMP)))
-		return  __secure_computing();
+		return  __secure_computing(sd);
 	return 0;
 }
-
-#define SECCOMP_PHASE1_OK	0
-#define SECCOMP_PHASE1_SKIP	1
-
-extern u32 seccomp_phase1(struct seccomp_data *sd);
-int seccomp_phase2(u32 phase1_result);
 #else
 extern void secure_computing_strict(int this_syscall);
 #endif
@@ -62,19 +56,19 @@ struct seccomp { };
 struct seccomp_filter { };
 
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
-static inline int secure_computing(void) { return 0; }
+static inline int secure_computing(struct seccomp_data *sd) { return 0; }
 #else
 static inline void secure_computing_strict(int this_syscall) { return; }
 #endif
 
 static inline long prctl_get_seccomp(void)
 {
-	return -EINVAL;
+	return 0;
 }
 
 static inline long prctl_set_seccomp(unsigned long arg2, char __user *arg3)
 {
-	return -EINVAL;
+	return 0;
 }
 
 static inline int seccomp_mode(struct seccomp *s)

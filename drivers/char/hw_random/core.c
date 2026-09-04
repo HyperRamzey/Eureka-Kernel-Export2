@@ -32,6 +32,7 @@
 
 
 #include <linux/device.h>
+#include <linux/freezer.h>
 #include <linux/hw_random.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -43,6 +44,7 @@
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/err.h>
+#include <linux/freezer.h>
 #include <asm/uaccess.h>
 
 
@@ -406,7 +408,9 @@ static int hwrng_fillfn(void *unused)
 {
 	long rc;
 
-	while (!kthread_should_stop()) {
+	set_freezable();
+
+	while (!kthread_freezable_should_stop(NULL)) {
 		struct hwrng *rng;
 
 		rng = get_current_rng();

@@ -14,13 +14,29 @@
 # Based on the ia64 boot/Makefile.
 #
 
-targets := Image Image.bz2 Image.gz Image.lz4 Image.lzma Image.lzo
+include $(srctree)/arch/arm64/boot/dts/Makefile
+
+targets := Image dtbo.img dtb.img
+
+#DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES))
+#ifneq ($(DTB_NAMES),)
+#DTB_LIST := $(addsuffix .dtb,$(DTB_NAMES))
+#else
+#DTB_LIST := $(dtb-y) $(dtbo-y)
+#endif
+#DTB_OBJS := $(addprefix $(obj)/dts/,$(DTB_LIST))
+
+DTB_OBJS := $(shell find $(obj)/dts/ -name \*.dtb)
+DTBO_OBJS := $(shell find $(obj)/dts/ -name \*.dtbo)
 
 $(obj)/Image: vmlinux FORCE
 	$(call if_changed,objcopy)
 
 $(obj)/Image.bz2: $(obj)/Image FORCE
 	$(call if_changed,bzip2)
+
+$(obj)/Image-dtb: $(obj)/Image $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
 
 $(obj)/Image.gz: $(obj)/Image FORCE
 	$(call if_changed,gzip)
@@ -33,6 +49,15 @@ $(obj)/Image.lzma: $(obj)/Image FORCE
 
 $(obj)/Image.lzo: $(obj)/Image FORCE
 	$(call if_changed,lzo)
+
+$(obj)/Image.gz-dtb: $(obj)/Image.gz $(DTB_OBJS) FORCE
+	$(call if_changed,cat)
+
+$(obj)/dtbo.img: $(DTBO_OBJS) FORCE
+	$(call if_changed,mkdtimg)
+
+$(obj)/dtb.img: $(DTB_OBJS) FORCE
+	$(call if_changed,mkdtimg)
 
 install: $(obj)/Image
 	$(CONFIG_SHELL) $(srctree)/$(src)/install.sh $(KERNELRELEASE) \

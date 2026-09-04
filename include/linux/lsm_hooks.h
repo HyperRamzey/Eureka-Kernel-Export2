@@ -640,11 +640,6 @@
  *	@sig contains the signal value.
  *	@secid contains the sid of the process where the signal originated
  *	Return 0 if permission is granted.
- * @task_wait:
- *	Check permission before allowing a process to reap a child process @p
- *	and collect its status information.
- *	@p contains the task_struct for process.
- *	Return 0 if permission is granted.
  * @task_prctl:
  *	Check permission before performing a process control operation on the
  *	current process.
@@ -1121,22 +1116,22 @@
  *
  * @binder_set_context_mgr
  *	Check whether @mgr is allowed to be the binder context manager.
- *	@mgr contains the struct cred for the current binder process.
+ *	@mgr contains the task_struct for the task being registered.
  *	Return 0 if permission is granted.
  * @binder_transaction
  *	Check whether @from is allowed to invoke a binder transaction call
  *	to @to.
- *	@from contains the struct cred for the sending process.
- *	@to contains the struct cred for the receiving process.
- * @binder_transfer_binder:
+ *	@from contains the task_struct for the sending task.
+ *	@to contains the task_struct for the receiving task.
+ * @binder_transfer_binder
  *	Check whether @from is allowed to transfer a binder reference to @to.
- *	@from contains the struct cred for the sending process.
- *	@to contains the struct cred for the receiving process.
- * @binder_transfer_file:
+ *	@from contains the task_struct for the sending task.
+ *	@to contains the task_struct for the receiving task.
+ * @binder_transfer_file
  *	Check whether @from is allowed to transfer @file to @to.
- *	@from contains the struct cred for the sending process.
+ *	@from contains the task_struct for the sending task.
  *	@file contains the struct file being transferred.
- *	@to contains the struct cred for the receiving process.
+ *	@to contains the task_struct for the receiving task.
  *
  * @ptrace_access_check:
  *	Check permission before allowing the current process to trace the
@@ -1261,6 +1256,10 @@
  *	audit_rule_init.
  *	@rule contains the allocated rule
  *
+ * @inode_invalidate_secctx:
+ *	Notify the security module that it must revalidate the security context
+ *	of an inode.
+ *
  * @inode_notifysecctx:
  *	Notify the security module of what the security context of an inode
  *	should be.  Initializes the incore security context managed by the
@@ -1297,17 +1296,50 @@
  *	@inode we wish to get the security context of.
  *	@ctx is a pointer in which to place the allocated security context.
  *	@ctxlen points to the place to put the length of @ctx.
- * This is the main security structure.
+ *
+ * Security hooks for using the eBPF maps and programs functionalities through
+ * eBPF syscalls.
+ *
+ * @bpf:
+ *	Do a initial check for all bpf syscalls after the attribute is copied
+ *	into the kernel. The actual security module can implement their own
+ *	rules to check the specific cmd they need.
+ *
+ * @bpf_map:
+ *	Do a check when the kernel generate and return a file descriptor for
+ *	eBPF maps.
+ *
+ *	@map: bpf map that we want to access
+ *	@mask: the access flags
+ *
+ * @bpf_prog:
+ *	Do a check when the kernel generate and return a file descriptor for
+ *	eBPF programs.
+ *
+ *	@prog: bpf prog that userspace want to use.
+ *
+ * @bpf_map_alloc_security:
+ *	Initialize the security field inside bpf map.
+ *
+ * @bpf_map_free_security:
+ *	Clean up the security information stored inside bpf map.
+ *
+ * @bpf_prog_alloc_security:
+ *	Initialize the security field inside bpf program.
+ *
+ * @bpf_prog_free_security:
+ *	Clean up the security information stored inside bpf prog.
+ *
  */
 
 union security_list_options {
-	int (*binder_set_context_mgr)(const struct cred *mgr);
-	int (*binder_transaction)(const struct cred *from,
-					const struct cred *to);
-	int (*binder_transfer_binder)(const struct cred *from,
-					const struct cred *to);
-	int (*binder_transfer_file)(const struct cred *from,
-					const struct cred *to,
+	int (*binder_set_context_mgr)(struct task_struct *mgr);
+	int (*binder_transaction)(struct task_struct *from,
+					struct task_struct *to);
+	int (*binder_transfer_binder)(struct task_struct *from,
+					struct task_struct *to);
+	int (*binder_transfer_file)(struct task_struct *from,
+					struct task_struct *to,
 					struct file *file);
 
 	int (*ptrace_access_check)(struct task_struct *child,
@@ -1413,14 +1445,14 @@ union security_list_options {
 	int (*inode_removexattr)(struct dentry *dentry, const char *name);
 	int (*inode_need_killpriv)(struct dentry *dentry);
 	int (*inode_killpriv)(struct dentry *dentry);
-	int (*inode_getsecurity)(const struct inode *inode, const char *name,
+	int (*inode_getsecurity)(struct inode *inode, const char *name,
 					void **buffer, bool alloc);
 	int (*inode_setsecurity)(struct inode *inode, const char *name,
 					const void *value, size_t size,
 					int flags);
 	int (*inode_listsecurity)(struct inode *inode, char *buffer,
 					size_t buffer_size);
-	void (*inode_getsecid)(const struct inode *inode, u32 *secid);
+	void (*inode_getsecid)(struct inode *inode, u32 *secid);
 
 	int (*file_permission)(struct file *file, int mask);
 	int (*file_alloc_security)(struct file *file);
@@ -1469,7 +1501,6 @@ union security_list_options {
 	int (*task_movememory)(struct task_struct *p);
 	int (*task_kill)(struct task_struct *p, struct siginfo *info,
 				int sig, u32 secid);
-	int (*task_wait)(struct task_struct *p);
 	int (*task_prctl)(int option, unsigned long arg2, unsigned long arg3,
 				unsigned long arg4, unsigned long arg5);
 	void (*task_to_inode)(struct task_struct *p, struct inode *inode);
@@ -1516,6 +1547,7 @@ union security_list_options {
 	int (*secctx_to_secid)(const char *secdata, u32 seclen, u32 *secid);
 	void (*release_secctx)(char *secdata, u32 seclen);
 
+	void (*inode_invalidate_secctx)(struct inode *inode);
 	int (*inode_notifysecctx)(struct inode *inode, void *ctx, u32 ctxlen);
 	int (*inode_setsecctx)(struct dentry *dentry, void *ctx, u32 ctxlen);
 	int (*inode_getsecctx)(struct inode *inode, void **ctx, u32 *ctxlen);
@@ -1613,6 +1645,17 @@ union security_list_options {
 				struct audit_context *actx);
 	void (*audit_rule_free)(void *lsmrule);
 #endif /* CONFIG_AUDIT */
+
+#ifdef CONFIG_BPF_SYSCALL
+	int (*bpf)(int cmd, union bpf_attr *attr,
+				 unsigned int size);
+	int (*bpf_map)(struct bpf_map *map, fmode_t fmode);
+	int (*bpf_prog)(struct bpf_prog *prog);
+	int (*bpf_map_alloc_security)(struct bpf_map *map);
+	void (*bpf_map_free_security)(struct bpf_map *map);
+	int (*bpf_prog_alloc_security)(struct bpf_prog_aux *aux);
+	void (*bpf_prog_free_security)(struct bpf_prog_aux *aux);
+#endif /* CONFIG_BPF_SYSCALL */
 };
 
 struct security_hook_heads {
@@ -1726,7 +1769,6 @@ struct security_hook_heads {
 	struct list_head task_getscheduler;
 	struct list_head task_movememory;
 	struct list_head task_kill;
-	struct list_head task_wait;
 	struct list_head task_prctl;
 	struct list_head task_to_inode;
 	struct list_head ipc_permission;
@@ -1757,6 +1799,7 @@ struct security_hook_heads {
 	struct list_head secid_to_secctx;
 	struct list_head secctx_to_secid;
 	struct list_head release_secctx;
+	struct list_head inode_invalidate_secctx;
 	struct list_head inode_notifysecctx;
 	struct list_head inode_setsecctx;
 	struct list_head inode_getsecctx;
@@ -1824,6 +1867,15 @@ struct security_hook_heads {
 	struct list_head audit_rule_match;
 	struct list_head audit_rule_free;
 #endif /* CONFIG_AUDIT */
+#ifdef CONFIG_BPF_SYSCALL
+	struct list_head bpf;
+	struct list_head bpf_map;
+	struct list_head bpf_prog;
+	struct list_head bpf_map_alloc_security;
+	struct list_head bpf_map_free_security;
+	struct list_head bpf_prog_alloc_security;
+	struct list_head bpf_prog_free_security;
+#endif /* CONFIG_BPF_SYSCALL */
 };
 
 /*

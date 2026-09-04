@@ -1,6 +1,6 @@
 config SECURITY_SELINUX
 	bool "NSA SELinux Support"
-	depends on SECURITY_NETWORK && AUDIT && NET && INET
+	depends on SECURITY_NETWORK && NET && INET
 	select NETWORK_SECMARK
 	default n
 	help
@@ -64,6 +64,14 @@ config SECURITY_SELINUX_DEVELOP
 	  unless you specify enforcing=1 on the kernel command line.  You
 	  can interactively toggle the kernel between enforcing mode and
 	  permissive mode (if permitted by the policy) via /selinux/enforce.
+
+config SELINUX_STATE_DT_NODE
+	bool "Read SELinux state initial value from DT"
+	depends on SECURITY_SELINUX_DEVELOP
+	default n
+	help
+	  This option will read the initial SELinux state from DTB. SELinux is
+	  toggleable after boot.
 
 config SECURITY_SELINUX_AVC_STATS
 	bool "NSA SELinux AVC Statistics"

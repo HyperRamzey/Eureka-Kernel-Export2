@@ -60,7 +60,7 @@ static u32 mdscr_read(void)
  * Allow root to disable self-hosted debug from userspace.
  * This is useful if you want to connect an external JTAG debugger.
  */
-static bool debug_enabled = true;
+static bool debug_enabled;
 
 static int create_debug_debugfs_entry(void)
 {
@@ -123,6 +123,28 @@ void disable_debug_monitors(enum dbg_active_el el)
 		mdscr_write(mdscr);
 	}
 }
+
+#ifdef CONFIG_SEC_KWATCHER
+/*
+ * restore mdscr register
+ */
+void restore_debug_monitors(void)
+{
+	u32 mdscr, enable = 0;
+
+	if (this_cpu_read(mde_ref_count) >= 1)
+		enable = DBG_MDSCR_MDE;
+
+	if (this_cpu_read(kde_ref_count) >= 1)
+		enable |= DBG_MDSCR_KDE;
+
+	if (enable && debug_enabled) {
+		mdscr = mdscr_read();
+		mdscr |= enable;
+		mdscr_write(mdscr);
+	}
+}
+#endif
 
 /*
  * OS lock clearing.
@@ -417,6 +439,11 @@ int kernel_active_single_step(void)
 {
 	WARN_ON(!irqs_disabled());
 	return mdscr_read() & DBG_MDSCR_SS;
+}
+
+void kernel_rewind_single_step(struct pt_regs *regs)
+{
+	set_regs_spsr_ss(regs);
 }
 
 /* ptrace API */

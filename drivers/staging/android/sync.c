@@ -164,8 +164,9 @@ static struct sync_fence *sync_fence_alloc(int size, const char *name)
 		goto err;
 
 	kref_init(&fence->kref);
+#ifdef CONFIG_SYNC_DEBUG
 	strlcpy(fence->name, name, sizeof(fence->name));
-
+#endif
 	init_waitqueue_head(&fence->wq);
 
 	return fence;
@@ -324,6 +325,12 @@ int sync_fence_wake_up_wq(wait_queue_t *curr, unsigned mode,
 	return 1;
 }
 
+bool sync_fence_signaled(struct sync_fence *fence)
+{
+	return atomic_read(&fence->status) <= 0;
+}
+EXPORT_SYMBOL(sync_fence_signaled);
+
 int sync_fence_wait_async(struct sync_fence *fence,
 			  struct sync_fence_waiter *waiter)
 {
@@ -368,6 +375,10 @@ int sync_fence_cancel_async(struct sync_fence *fence,
 }
 EXPORT_SYMBOL(sync_fence_cancel_async);
 
+#ifdef CONFIG_MALI_SEC_JOB_STATUS_CHECK
+extern int gpu_job_fence_status_dump(struct sync_fence *timeout_fence);
+#endif
+
 int sync_fence_wait(struct sync_fence *fence, long timeout)
 {
 	long ret;
@@ -390,8 +401,12 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 		return ret;
 	} else if (ret == 0) {
 		if (timeout) {
-			pr_info("fence timeout on [%p] after %dms\n", fence,
+			pr_info("fence timeout on [%pK] after %dms\n", fence,
 				jiffies_to_msecs(timeout));
+#ifdef CONFIG_MALI_SEC_JOB_STATUS_CHECK
+			pr_info("GPU JOB STATUS DUMP\n");
+			gpu_job_fence_status_dump(fence);
+#endif
 			sync_dump();
 		}
 		return -ETIME;
@@ -400,6 +415,10 @@ int sync_fence_wait(struct sync_fence *fence, long timeout)
 	ret = atomic_read(&fence->status);
 	if (ret) {
 		pr_info("fence error %ld on [%p]\n", ret, fence);
+#ifdef CONFIG_MALI_SEC_JOB_STATUS_CHECK
+		pr_info("GPU JOB STATUS DUMP\n");
+		gpu_job_fence_status_dump(fence);
+#endif
 		sync_dump();
 	}
 	return ret;
@@ -465,6 +484,13 @@ static bool android_fence_enable_signaling(struct fence *fence)
 	return true;
 }
 
+static void android_fence_disable_signaling(struct fence *fence)
+{
+	struct sync_pt *pt = container_of(fence, struct sync_pt, base);
+
+	list_del_init(&pt->active_list);
+}
+
 static int android_fence_fill_driver_data(struct fence *fence,
 					  void *data, int size)
 {
@@ -508,6 +534,7 @@ static const struct fence_ops android_fence_ops = {
 	.get_driver_name = android_fence_get_driver_name,
 	.get_timeline_name = android_fence_get_timeline_name,
 	.enable_signaling = android_fence_enable_signaling,
+	.disable_signaling = android_fence_disable_signaling,
 	.signaled = android_fence_signaled,
 	.wait = fence_default_wait,
 	.release = android_fence_release,
@@ -649,7 +676,8 @@ static int sync_fill_pt_info(struct fence *fence, void *data, int size)
 static long sync_fence_ioctl_fence_info(struct sync_fence *fence,
 					unsigned long arg)
 {
-	struct sync_fence_info_data *data;
+	u8 data_buf[4096] __aligned(sizeof(long));
+	struct sync_fence_info_data *data = (typeof(data))data_buf;
 	__u32 size;
 	__u32 len = 0;
 	int ret, i;
@@ -663,9 +691,7 @@ static long sync_fence_ioctl_fence_info(struct sync_fence *fence,
 	if (size > 4096)
 		size = 4096;
 
-	data = kzalloc(size, GFP_KERNEL);
-	if (data == NULL)
-		return -ENOMEM;
+	memset(data, 0, size);
 
 	strlcpy(data->name, fence->name, sizeof(data->name));
 	data->status = atomic_read(&fence->status);
@@ -693,7 +719,18 @@ static long sync_fence_ioctl_fence_info(struct sync_fence *fence,
 		ret = 0;
 
 out:
-	kfree(data);
+
+	return ret;
+}
+
+static long sync_fence_ioctl_set_name(struct sync_fence *fence,
+				      char name[32])
+{
+	int ret = 0;
+
+	if (copy_from_user(fence->name + HWC_FENCE_NAME_START,
+		name, HWC_FENCE_NAME_LEN))
+		return -EFAULT;
 
 	return ret;
 }
@@ -712,6 +749,9 @@ static long sync_fence_ioctl(struct file *file, unsigned int cmd,
 
 	case SYNC_IOC_FENCE_INFO:
 		return sync_fence_ioctl_fence_info(fence, arg);
+
+	case SYNC_IOC_FENCE_NAME:
+		return sync_fence_ioctl_set_name(fence, (char *)arg);
 
 	default:
 		return -ENOTTY;

@@ -33,6 +33,7 @@ static irqreturn_t bad_chained_irq(int irq, void *dev_id)
  */
 struct irqaction chained_action = {
 	.handler = bad_chained_irq,
+	.name = "chained-irq",
 };
 
 /**
@@ -370,22 +371,25 @@ static bool irq_check_poll(struct irq_desc *desc)
 
 static bool irq_may_run(struct irq_desc *desc)
 {
-	unsigned int mask = IRQD_IRQ_INPROGRESS | IRQD_WAKEUP_ARMED;
 
-	/*
-	 * If the interrupt is not in progress and is not an armed
-	 * wakeup interrupt, proceed.
-	 */
-	if (!irqd_has_set(&desc->irq_data, mask))
+	/* Proceed if the IRQ isn't in progress and isn't a wakeup interrupt */
+	if (!irqd_has_set(&desc->irq_data, IRQD_IRQ_INPROGRESS |
+			  IRQD_WAKEUP_ARMED | IRQD_WAKEUP_STATE))
 		return true;
 
 	/*
 	 * If the interrupt is an armed wakeup source, mark it pending
 	 * and suspended, disable it and notify the pm core about the
-	 * event.
+	 * event. If it's a wakeup interrupt and has yet to be armed
+	 * but suspend is in progress, do a wakeup to cancel suspend.
+	 * The IRQ will be allowed to run via the check right below.
 	 */
 	if (irq_pm_check_wakeup(desc))
 		return false;
+
+	/* Run the IRQ as usual if it's a wakeup source and isn't yet armed */
+	if (irqd_is_wakeup_set(&desc->irq_data))
+		return true;
 
 	/*
 	 * Handle a potential concurrent poll on a different core.
@@ -836,7 +840,8 @@ void irq_modify_status(unsigned int irq, unsigned long clr, unsigned long set)
 	irq_settings_clr_and_set(desc, clr, set);
 
 	irqd_clear(&desc->irq_data, IRQD_NO_BALANCING | IRQD_PER_CPU |
-		   IRQD_TRIGGER_MASK | IRQD_LEVEL | IRQD_MOVE_PCNTXT);
+		   IRQD_TRIGGER_MASK | IRQD_LEVEL | IRQD_MOVE_PCNTXT |
+		   IRQD_AFFINITY_MANAGED);
 	if (irq_settings_has_no_balance_set(desc))
 		irqd_set(&desc->irq_data, IRQD_NO_BALANCING);
 	if (irq_settings_is_per_cpu(desc))
@@ -845,6 +850,8 @@ void irq_modify_status(unsigned int irq, unsigned long clr, unsigned long set)
 		irqd_set(&desc->irq_data, IRQD_MOVE_PCNTXT);
 	if (irq_settings_is_level(desc))
 		irqd_set(&desc->irq_data, IRQD_LEVEL);
+	if (irq_settings_has_affinity_managed_set(desc))
+		irqd_set(&desc->irq_data, IRQD_AFFINITY_MANAGED);
 
 	irqd_set(&desc->irq_data, irq_settings_get_trigger_mask(desc));
 

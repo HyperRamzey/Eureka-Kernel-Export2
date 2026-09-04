@@ -23,12 +23,21 @@
 #include <linux/rcupdate.h>
 #include <linux/workqueue.h>
 
+#if defined(CONFIG_SEC_FD_DETECT)
+extern void save_open_close_fdinfo(int fd, int flag, struct task_struct *cur, struct files_struct *files);
+extern void check_fd_invalid_close(int fd, struct task_struct *cur, struct files_struct *files, struct file *file);
+#endif // END CONFIG_SEC_FD_DETECT
+
 int sysctl_nr_open __read_mostly = 1024*1024;
 int sysctl_nr_open_min = BITS_PER_LONG;
 /* our max() is unusable in constant expressions ;-/ */
 #define __const_max(x, y) ((x) < (y) ? (x) : (y))
 int sysctl_nr_open_max = __const_max(INT_MAX, ~(size_t)0/sizeof(void *)) &
 			 -BITS_PER_LONG;
+
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+extern void sec_debug_EMFILE_error_proc(unsigned long files_addr);
+#endif
 
 static void *alloc_fdmem(size_t size)
 {
@@ -185,6 +194,9 @@ static int expand_fdtable(struct files_struct *files, int nr)
 	 * caller and alloc_fdtable().  Cheaper to catch it here...
 	 */
 	if (unlikely(new_fdt->max_fds <= nr)) {
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+		sec_debug_EMFILE_error_proc((unsigned long)files);
+#endif
 		__free_fdtable(new_fdt);
 		return -EMFILE;
 	}
@@ -222,8 +234,12 @@ repeat:
 		return expanded;
 
 	/* Can we expand? */
-	if (nr >= sysctl_nr_open)
+	if (nr >= sysctl_nr_open) {
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+		sec_debug_EMFILE_error_proc((unsigned long)files);
+#endif
 		return -EMFILE;
+	}
 
 	if (unlikely(files->resize_in_progress)) {
 		spin_unlock(&files->file_lock);
@@ -332,6 +348,9 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 
 		/* beyond sysctl_nr_open; nothing to do */
 		if (unlikely(new_fdt->max_fds < open_files)) {
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+			sec_debug_EMFILE_error_proc((unsigned long)oldf);
+#endif
 			__free_fdtable(new_fdt);
 			*errorp = -EMFILE;
 			goto out_release;
@@ -516,8 +535,12 @@ repeat:
 	 * will limit the total number of files that can be opened.
 	 */
 	error = -EMFILE;
-	if (fd >= end)
+	if (fd >= end) {
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+		sec_debug_EMFILE_error_proc((unsigned long)files);
+#endif
 		goto out;
+	}
 
 	error = expand_files(files, fd);
 	if (error < 0)
@@ -619,6 +642,10 @@ void __fd_install(struct files_struct *files, unsigned int fd,
 	fdt = rcu_dereference_sched(files->fdt);
 	BUG_ON(fdt->fd[fd] != NULL);
 	rcu_assign_pointer(fdt->fd[fd], file);
+
+#if defined(CONFIG_SEC_FD_DETECT)
+	save_open_close_fdinfo(fd, true, current, files);
+#endif // END CONFIG_SEC_FD_DETECT
 	rcu_read_unlock_sched();
 }
 
@@ -641,9 +668,16 @@ int __close_fd(struct files_struct *files, unsigned fd)
 	fdt = files_fdtable(files);
 	if (fd >= fdt->max_fds)
 		goto out_unlock;
+	fd = array_index_nospec(fd, fdt->max_fds);
 	file = fdt->fd[fd];
 	if (!file)
 		goto out_unlock;
+
+#if defined(CONFIG_SEC_FD_DETECT)
+	check_fd_invalid_close(fd, current, files, file);
+	save_open_close_fdinfo(fd, false, current, files);
+#endif // END CONFIG_SEC_FD_DETECT
+
 	rcu_assign_pointer(fdt->fd[fd], NULL);
 	__clear_close_on_exec(fd, fdt);
 	__put_unused_fd(files, fd);
@@ -691,28 +725,69 @@ void do_close_on_exec(struct files_struct *files)
 	spin_unlock(&files->file_lock);
 }
 
+static inline struct file *__fget_files_rcu(struct files_struct *files,
+		unsigned int fd, fmode_t mask, unsigned int refs)
+{
+	for (;;) {
+		struct file *file;
+		struct fdtable *fdt = rcu_dereference_raw(files->fdt);
+		struct file __rcu **fdentry;
+
+		if (unlikely(fd >= fdt->max_fds))
+			return NULL;
+
+		fdentry = fdt->fd + array_index_nospec(fd, fdt->max_fds);
+		file = rcu_dereference_raw(*fdentry);
+		if (unlikely(!file))
+			return NULL;
+
+		if (unlikely(file->f_mode & mask))
+			return NULL;
+
+		/*
+		 * Ok, we have a file pointer. However, because we do
+		 * this all locklessly under RCU, we may be racing with
+		 * that file being closed.
+		 *
+		 * Such a race can take two forms:
+		 *
+		 *  (a) the file ref already went down to zero,
+		 *      and get_file_rcu_many() fails. Just try
+		 *      again:
+		 */
+		if (unlikely(!get_file_rcu_many(file, refs)))
+			continue;
+
+		/*
+		 *  (b) the file table entry has changed under us.
+		 *       Note that we don't need to re-check the 'fdt->fd'
+		 *       pointer having changed, because it always goes
+		 *       hand-in-hand with 'fdt'.
+		 *
+		 * If so, we need to put our refs and try again.
+		 */
+		if (unlikely(rcu_dereference_raw(files->fdt) != fdt) ||
+		    unlikely(rcu_dereference_raw(*fdentry) != file)) {
+			fput_many(file, refs);
+			continue;
+		}
+
+		/*
+		 * Ok, we have a ref to the file, and checked that it
+		 * still exists.
+		 */
+		return file;
+	}
+}
+
+
 static struct file *__fget(unsigned int fd, fmode_t mask, unsigned int refs)
 {
 	struct files_struct *files = current->files;
 	struct file *file;
 
 	rcu_read_lock();
-loop:
-	file = fcheck_files(files, fd);
-	if (file) {
-		/* File object ref couldn't be taken.
-		 * dup2() atomicity guarantee is the reason
-		 * we loop to catch the new file (or NULL pointer)
-		 */
-		if (file->f_mode & mask)
-			file = NULL;
-		else if (!get_file_rcu_many(file, refs))
-			goto loop;
-		else if (__fcheck_files(files, fd) != file) {
-			fput_many(file, refs);
-			goto loop;
-		}
-	}
+	file = __fget_files_rcu(files, fd, mask, refs);
 	rcu_read_unlock();
 
 	return file;
@@ -902,8 +977,12 @@ SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 	if (unlikely(oldfd == newfd))
 		return -EINVAL;
 
-	if (newfd >= rlimit(RLIMIT_NOFILE))
+	if (newfd >= rlimit(RLIMIT_NOFILE)) {
+#ifdef CONFIG_SEC_DEBUG_FILE_LEAK
+		sec_debug_EMFILE_error_proc((unsigned long)files);
+#endif
 		return -EBADF;
+	}
 
 	spin_lock(&files->file_lock);
 	err = expand_files(files, newfd);

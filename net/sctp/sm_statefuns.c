@@ -3451,6 +3451,7 @@ sctp_disposition_t sctp_sf_ootb(struct net *net,
 		if (ntohs(ch->length) < sizeof(sctp_chunkhdr_t))
 			return sctp_sf_violation_chunklen(net, ep, asoc, type, arg,
 						  commands);
+						  
 
 		/* Report violation if chunk len overflows */
 		ch_end = ((__u8 *)ch) + WORD_ROUND(ntohs(ch->length));
@@ -4148,7 +4149,7 @@ sctp_disposition_t sctp_sf_eat_auth(struct net *net,
 				    SCTP_AUTH_NEWKEY, GFP_ATOMIC);
 
 		if (!ev)
-			return -ENOMEM;
+			return SCTP_DISPOSITION_NOMEM;
 
 		sctp_add_cmd_sf(commands, SCTP_CMD_EVENT_ULP,
 				SCTP_ULPEVENT(ev));

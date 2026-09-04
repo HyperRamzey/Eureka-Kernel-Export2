@@ -364,7 +364,6 @@ out_free_io_cache:
 
 static void local_exit(void)
 {
-	flush_scheduled_work();
 	destroy_workqueue(deferred_remove_workqueue);
 
 	kmem_cache_destroy(_rq_cache);
@@ -621,7 +620,13 @@ static int dm_blk_ioctl(struct block_device *bdev, fmode_t mode,
 			goto out;
 	}
 
-	r =  __blkdev_driver_ioctl(tgt_bdev, mode, cmd, arg);
+	if(!strcmp(tgt->type->name , "dirty") && 
+	          (tgt->type->ioctl         ) && 
+	          (cmd == 1                 )){
+		r = tgt->type->ioctl(tgt, cmd, arg);
+	}else{
+		r =  __blkdev_driver_ioctl(tgt_bdev, mode, cmd, arg);
+	}
 out:
 	dm_put_live_table(md, srcu_idx);
 	return r;
@@ -1937,7 +1942,7 @@ static void init_tio(struct dm_rq_target_io *tio, struct request *rq,
 	tio->error = 0;
 	memset(&tio->info, 0, sizeof(tio->info));
 	if (md->kworker_task)
-		init_kthread_work(&tio->work, map_tio_request);
+		kthread_init_work(&tio->work, map_tio_request);
 }
 
 static struct dm_rq_target_io *prep_tio(struct request *rq,
@@ -2185,8 +2190,8 @@ static void dm_request_fn(struct request_queue *q)
 		tio = tio_from_request(rq);
 		/* Establish tio->ti before queuing work (map_tio_request) */
 		tio->ti = ti;
-		queue_kthread_work(&md->kworker, &tio->work);
-		BUG_ON(!irqs_disabled());
+		kthread_queue_work(&md->kworker, &tio->work);
+		BUG_ON_NONRT(!irqs_disabled());
 	}
 
 	goto out;
@@ -2426,7 +2431,9 @@ static struct mapped_device *alloc_dev(int minor)
 	md->flush_bio.bi_bdev = md->bdev;
 	md->flush_bio.bi_rw = WRITE_FLUSH;
 
-	dm_stats_init(&md->stats);
+	r = dm_stats_init(&md->stats);
+	if (r < 0)
+		goto bad;
 
 	/* Populate the mapping, nobody knows we exist yet */
 	spin_lock(&_minor_lock);
@@ -2661,7 +2668,7 @@ EXPORT_SYMBOL_GPL(dm_get_queue_limits);
 static void init_rq_based_worker_thread(struct mapped_device *md)
 {
 	/* Initialize the request-based DM worker thread */
-	init_kthread_worker(&md->kworker);
+	kthread_init_worker(&md->kworker);
 	md->kworker_task = kthread_run(kthread_worker_fn, &md->kworker,
 				       "kdmwork-%s", dm_device_name(md));
 }
@@ -2757,7 +2764,7 @@ static int dm_mq_queue_rq(struct blk_mq_hw_ctx *hctx,
 		/* clone request is allocated at the end of the pdu */
 		tio->clone = (void *)blk_mq_rq_to_pdu(rq) + sizeof(struct dm_rq_target_io);
 		(void) clone_rq(rq, md, tio, GFP_ATOMIC);
-		queue_kthread_work(&md->kworker, &tio->work);
+		kthread_queue_work(&md->kworker, &tio->work);
 	} else {
 		/* Direct call is fine since .queue_rq allows allocations */
 		if (map_request(tio, rq, md) == DM_MAPIO_REQUEUE) {
@@ -2947,7 +2954,7 @@ static void __dm_destroy(struct mapped_device *md, bool wait)
 	blk_set_queue_dying(q);
 
 	if (dm_request_based(md) && md->kworker_task)
-		flush_kthread_worker(&md->kworker);
+		kthread_flush_worker(&md->kworker);
 
 	/*
 	 * Take suspend_lock so that presuspend and postsuspend methods
@@ -3021,6 +3028,8 @@ static int dm_wait_for_completion(struct mapped_device *md, int interruptible)
 	set_current_state(TASK_RUNNING);
 
 	remove_wait_queue(&md->wait, &wait);
+
+	smp_rmb(); /* paired with atomic_dec_return in end_io_acct */
 
 	return r;
 }
@@ -3202,7 +3211,7 @@ static int __dm_suspend(struct mapped_device *md, struct dm_table *map,
 	if (dm_request_based(md)) {
 		stop_queue(md->queue);
 		if (md->kworker_task)
-			flush_kthread_worker(&md->kworker);
+			kthread_flush_worker(&md->kworker);
 	}
 
 	flush_workqueue(md->wq);

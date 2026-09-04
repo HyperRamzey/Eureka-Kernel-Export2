@@ -48,8 +48,6 @@ void blk_mq_disable_hotplug(void);
  * CPU -> queue mappings
  */
 extern unsigned int *blk_mq_make_queue_map(struct blk_mq_tag_set *set);
-extern int blk_mq_update_queue_map(unsigned int *map, unsigned int nr_queues,
-				   const struct cpumask *online_mask);
 extern int blk_mq_hw_queue_to_node(unsigned int *map, unsigned int);
 
 /*
@@ -74,7 +72,10 @@ struct blk_align_bitmap {
 static inline struct blk_mq_ctx *__blk_mq_get_ctx(struct request_queue *q,
 					   unsigned int cpu)
 {
-	return per_cpu_ptr(q->queue_ctx, cpu);
+	struct blk_mq_ctx *ctx;
+
+	ctx = per_cpu_ptr(q->queue_ctx, cpu);
+	return ctx;
 }
 
 /*
@@ -85,12 +86,12 @@ static inline struct blk_mq_ctx *__blk_mq_get_ctx(struct request_queue *q,
  */
 static inline struct blk_mq_ctx *blk_mq_get_ctx(struct request_queue *q)
 {
-	return __blk_mq_get_ctx(q, get_cpu());
+	return __blk_mq_get_ctx(q, get_cpu_light());
 }
 
 static inline void blk_mq_put_ctx(struct blk_mq_ctx *ctx)
 {
-	put_cpu();
+	put_cpu_light();
 }
 
 struct blk_mq_alloc_data {

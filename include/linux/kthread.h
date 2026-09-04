@@ -37,6 +37,40 @@ struct task_struct *kthread_create_on_cpu(int (*threadfn)(void *data),
 	__k;								   \
 })
 
+/**
+ * kthread_run_perf_critical - create and wake a performance-critical thread.
+ *
+ * Same as kthread_create().
+ */
+#define kthread_run_perf_critical(threadfn, data, namefmt, ...)		   \
+({									   \
+	struct task_struct *__k						   \
+		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
+	if (!IS_ERR(__k)) {						   \
+		__k->flags |= PF_PERF_CRITICAL;				   \
+		kthread_bind_mask(__k, cpu_perf_mask);			   \
+		wake_up_process(__k);					   \
+	}								   \
+	__k;								   \
+})
+
+/**
+ * kthread_run_low_power - create and wake a low-power thread.
+ *
+ * Same as kthread_run(), but with the kthread bound to low-power CPUs.
+ */
+#define kthread_run_low_power(threadfn, data, namefmt, ...)		   \
+({									   \
+	struct task_struct *__k						   \
+		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
+	if (!IS_ERR(__k)) {						   \
+		__k->flags |= PF_LOW_POWER;				   \
+		kthread_bind_mask(__k, cpu_lp_mask);			   \
+		wake_up_process(__k);					   \
+	}								   \
+	__k;								   \
+})
+
 void kthread_bind(struct task_struct *k, unsigned int cpu);
 void kthread_bind_mask(struct task_struct *k, const struct cpumask *mask);
 int kthread_stop(struct task_struct *k);
@@ -57,7 +91,7 @@ extern int tsk_fork_get_node(struct task_struct *tsk);
  * Simple work processor based on kthread.
  *
  * This provides easier way to make use of kthreads.  A kthread_work
- * can be queued and flushed using queue/flush_kthread_work()
+ * can be queued and flushed using queue/kthread_flush_work()
  * respectively.  Queued kthread_works are processed by a kthread
  * running kthread_worker_fn().
  */
@@ -75,6 +109,8 @@ struct kthread_work {
 	struct list_head	node;
 	kthread_work_func_t	func;
 	struct kthread_worker	*worker;
+	/* Number of canceling calls that are running at the moment. */
+	int			canceling;
 };
 
 #define KTHREAD_WORKER_INIT(worker)	{				\
@@ -99,34 +135,48 @@ struct kthread_work {
  */
 #ifdef CONFIG_LOCKDEP
 # define KTHREAD_WORKER_INIT_ONSTACK(worker)				\
-	({ init_kthread_worker(&worker); worker; })
+	({ kthread_init_worker(&worker); worker; })
 # define DEFINE_KTHREAD_WORKER_ONSTACK(worker)				\
 	struct kthread_worker worker = KTHREAD_WORKER_INIT_ONSTACK(worker)
 #else
 # define DEFINE_KTHREAD_WORKER_ONSTACK(worker) DEFINE_KTHREAD_WORKER(worker)
 #endif
 
-extern void __init_kthread_worker(struct kthread_worker *worker,
+extern void __kthread_init_worker(struct kthread_worker *worker,
 			const char *name, struct lock_class_key *key);
 
-#define init_kthread_worker(worker)					\
+#define kthread_init_worker(worker)					\
 	do {								\
 		static struct lock_class_key __key;			\
-		__init_kthread_worker((worker), "("#worker")->lock", &__key); \
+		__kthread_init_worker((worker), "("#worker")->lock", &__key); \
 	} while (0)
 
-#define init_kthread_work(work, fn)					\
+#define kthread_init_work(work, fn)					\
 	do {								\
 		memset((work), 0, sizeof(struct kthread_work));		\
 		INIT_LIST_HEAD(&(work)->node);				\
 		(work)->func = (fn);					\
 	} while (0)
 
+/*
+ * Returns true when the work could not be queued at the moment.
+ * It happens when it is already pending in a worker list.
+ */
+static inline bool queuing_blocked(struct kthread_worker *worker,
+				   struct kthread_work *work)
+{
+	lockdep_assert_held(&worker->lock);
+
+	return !list_empty(&work->node);
+}
+
 int kthread_worker_fn(void *worker_ptr);
 
-bool queue_kthread_work(struct kthread_worker *worker,
+bool kthread_queue_work(struct kthread_worker *worker,
 			struct kthread_work *work);
-void flush_kthread_work(struct kthread_work *work);
-void flush_kthread_worker(struct kthread_worker *worker);
+void kthread_flush_work(struct kthread_work *work);
+void kthread_flush_worker(struct kthread_worker *worker);
+
+bool kthread_cancel_work_sync(struct kthread_work *work);
 
 #endif /* _LINUX_KTHREAD_H */

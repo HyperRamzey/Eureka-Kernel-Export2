@@ -1,6 +1,10 @@
 #ifndef _INET_COMMON_H
 #define _INET_COMMON_H
 
+#ifdef CONFIG_MPTCP
+	#include <net/sock.h>
+#endif
+
 extern const struct proto_ops inet_stream_ops;
 extern const struct proto_ops inet_dgram_ops;
 
@@ -13,6 +17,10 @@ struct sock;
 struct sockaddr;
 struct socket;
 
+#ifdef CONFIG_MPTCP
+	int inet_create(struct net *net, struct socket *sock, int protocol, int kern);
+	int inet6_create(struct net *net, struct socket *sock, int protocol, int kern);
+#endif
 int inet_release(struct socket *sock);
 int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 			int addr_len, int flags);
@@ -30,6 +38,8 @@ int inet_shutdown(struct socket *sock, int how);
 int inet_listen(struct socket *sock, int backlog);
 void inet_sock_destruct(struct sock *sk);
 int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len);
+int __inet_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
+		bool force_bind_address_no_port, bool with_lock);
 int inet_getname(struct socket *sock, struct sockaddr *uaddr, int *uaddr_len,
 		 int peer);
 int inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);

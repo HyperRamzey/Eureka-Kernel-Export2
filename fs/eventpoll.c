@@ -34,6 +34,7 @@
 #include <linux/mutex.h>
 #include <linux/anon_inodes.h>
 #include <linux/device.h>
+#include <linux/freezer.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/mman.h>
@@ -307,7 +308,11 @@ struct ctl_table epoll_table[] = {
 
 static const struct file_operations eventpoll_fops;
 
+#if defined(CONFIG_SEC_FD_DETECT)
+int is_file_epoll(struct file *f)
+#else
 static inline int is_file_epoll(struct file *f)
+#endif
 {
 	return f->f_op == &eventpoll_fops;
 }
@@ -503,12 +508,12 @@ static int ep_poll_wakeup_proc(void *priv, void *cookie, int call_nests)
  */
 static void ep_poll_safewake(wait_queue_head_t *wq)
 {
-	int this_cpu = get_cpu();
+	int this_cpu = get_cpu_light();
 
 	ep_call_nested(&poll_safewake_ncalls, EP_MAX_NESTS,
 		       ep_poll_wakeup_proc, NULL, wq, (void *) (long) this_cpu);
 
-	put_cpu();
+	put_cpu_light();
 }
 
 static void ep_remove_wait_queue(struct eppoll_entry *pwq)
@@ -1234,14 +1239,22 @@ static int ep_create_wakeup_source(struct epitem *epi)
 {
 	struct name_snapshot n;
 	struct wakeup_source *ws;
+	char task_comm_buf[TASK_COMM_LEN];
+	char buf[64];
+
+	get_task_comm(task_comm_buf, current);
 
 	if (!epi->ep->ws) {
-		epi->ep->ws = wakeup_source_register("eventpoll");
+		snprintf(buf, sizeof(buf), "epoll_%.*s_epollfd",
+			 (int)sizeof(task_comm_buf), task_comm_buf);
+		epi->ep->ws = wakeup_source_register(n.name);
 		if (!epi->ep->ws)
 			return -ENOMEM;
 	}
 
 	take_dentry_name_snapshot(&n, epi->ffd.file->f_path.dentry);
+	snprintf(buf, sizeof(buf), "epoll_%.*s_file:%s",
+		 (int)sizeof(task_comm_buf), task_comm_buf, n.name);
 	ws = wakeup_source_register(n.name);
 	release_dentry_name_snapshot(&n);
 
@@ -1596,7 +1609,7 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 {
 	int res = 0, eavail, timed_out = 0;
 	unsigned long flags;
-	long slack = 0;
+	u64 slack = 0;
 	wait_queue_t wait;
 	ktime_t expires, *to = NULL;
 
@@ -1643,7 +1656,8 @@ fetch_events:
 			}
 
 			spin_unlock_irqrestore(&ep->lock, flags);
-			if (!schedule_hrtimeout_range(to, slack, HRTIMER_MODE_ABS))
+			if (!freezable_schedule_hrtimeout_range(to, slack,
+								HRTIMER_MODE_ABS))
 				timed_out = 1;
 
 			spin_lock_irqsave(&ep->lock, flags);
@@ -1850,8 +1864,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 		goto error_tgt_fput;
 
 	/* Check if EPOLLWAKEUP is allowed */
-	if (ep_op_has_event(op))
-		ep_take_care_of_epollwakeup(&epds);
+	epds.events &= ~EPOLLWAKEUP;
 
 	/*
 	 * We have to check that the file structure underneath the file descriptor

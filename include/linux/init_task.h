@@ -14,6 +14,9 @@
 #include <linux/rbtree.h>
 #include <net/net_namespace.h>
 #include <linux/sched/rt.h>
+#include <linux/task_integrity.h>
+
+#include <asm/thread_info.h>
 
 #include <asm/thread_info.h>
 
@@ -150,13 +153,36 @@ extern struct task_group root_task_group;
 # define INIT_PERF_EVENTS(tsk)
 #endif
 
+#ifdef CONFIG_PREEMPT_RT_BASE
+# define INIT_TIMER_LIST		.posix_timer_list = NULL,
+#else
+# define INIT_TIMER_LIST
+#endif
+
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
 # define INIT_VTIME(tsk)						\
-	.vtime_seqlock = __SEQLOCK_UNLOCKED(tsk.vtime_seqlock),	\
+	.vtime_seqcount = SEQCNT_ZERO(tsk.vtime_seqcount),	\
 	.vtime_snap = 0,				\
 	.vtime_snap_whence = VTIME_SYS,
 #else
 # define INIT_VTIME(tsk)
+#endif
+
+#ifdef CONFIG_FIVE
+# define INIT_TASK_INTEGRITY(integrity) {				\
+	.user_value = INTEGRITY_NONE,					\
+	.value = INTEGRITY_NONE,					\
+	.usage_count = ATOMIC_INIT(1),					\
+	.value_lock = __SPIN_LOCK_UNLOCKED(integrity.value_lock),	\
+	.list_lock = __SPIN_LOCK_UNLOCKED(integrity.list_lock),		\
+	.events = { .list = LIST_HEAD_INIT(integrity.events.list),},	\
+}
+
+# define INIT_INTEGRITY(tsk)						\
+	.integrity = &init_integrity,
+#else
+# define INIT_INTEGRITY(tsk)
+# define INIT_TASK_INTEGRITY(integrity)
 #endif
 
 #define INIT_TASK_COMM "swapper"
@@ -199,7 +225,7 @@ extern struct task_group root_task_group;
 {									\
 	INIT_TASK_TI(tsk)						\
 	.state		= 0,						\
-	.stack		= &init_thread_info,				\
+	.stack		= init_stack,					\
 	.usage		= ATOMIC_INIT(2),				\
 	.flags		= PF_KTHREAD,					\
 	.prio		= MAX_PRIO-20,					\
@@ -208,6 +234,7 @@ extern struct task_group root_task_group;
 	.policy		= SCHED_NORMAL,					\
 	.cpus_allowed	= CPU_MASK_ALL,					\
 	.nr_cpus_allowed= NR_CPUS,					\
+	.cpus_requested	= CPU_MASK_ALL,					\
 	.mm		= NULL,						\
 	.active_mm	= &init_mm,					\
 	.restart_block = {						\
@@ -247,7 +274,8 @@ extern struct task_group root_task_group;
 	.journal_info	= NULL,						\
 	.cpu_timers	= INIT_CPU_TIMERS(tsk.cpu_timers),		\
 	.pi_lock	= __RAW_SPIN_LOCK_UNLOCKED(tsk.pi_lock),	\
-	.timer_slack_ns = 50000, /* 50 usec default slack */		\
+	.timer_slack_ns = 500000, /* 500 usec default slack */		\
+	INIT_TIMER_LIST							\
 	.pids = {							\
 		[PIDTYPE_PID]  = INIT_PID_LINK(PIDTYPE_PID),		\
 		[PIDTYPE_PGID] = INIT_PID_LINK(PIDTYPE_PGID),		\
@@ -269,6 +297,7 @@ extern struct task_group root_task_group;
 	INIT_VTIME(tsk)							\
 	INIT_NUMA_BALANCING(tsk)					\
 	INIT_KASAN(tsk)							\
+	INIT_INTEGRITY(tsk)						\
 }
 
 

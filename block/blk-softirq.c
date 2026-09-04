@@ -40,17 +40,15 @@ static void blk_done_softirq(struct softirq_action *h)
 static void trigger_softirq(void *data)
 {
 	struct request *rq = data;
-	unsigned long flags;
 	struct list_head *list;
 
-	local_irq_save(flags);
 	list = this_cpu_ptr(&blk_cpu_done);
 	list_add_tail(&rq->ipi_list, list);
 
 	if (list->next == &rq->ipi_list)
 		raise_softirq_irqoff(BLOCK_SOFTIRQ);
 
-	local_irq_restore(flags);
+	preempt_check_resched_rt();
 }
 
 /*
@@ -93,8 +91,8 @@ static int blk_cpu_notify(struct notifier_block *self, unsigned long action,
 				 this_cpu_ptr(&blk_cpu_done));
 		raise_softirq_irqoff(BLOCK_SOFTIRQ);
 		local_irq_enable();
+		preempt_check_resched_rt();
 	}
-
 	return NOTIFY_OK;
 }
 
@@ -112,12 +110,17 @@ void __blk_complete_request(struct request *req)
 	BUG_ON(!q->softirq_done_fn);
 
 	local_irq_save(flags);
-	cpu = smp_processor_id();
+	cpu = get_cpu();
 
 	/*
 	 * Select completion CPU
+	 *
+	 * Refrain from waking up an idle CPU if possible since the exit
+	 * latency of taking req->cpu out of an idle cstate will likely
+	 * exceed the rq->deadline constraint compared to executing the
+	 * request locally instead.
 	 */
-	if (req->cpu != -1) {
+	if (req->cpu != -1 && !idle_cpu(req->cpu)) {
 		ccpu = req->cpu;
 		if (!test_bit(QUEUE_FLAG_SAME_FORCE, &q->queue_flags))
 			shared = cpus_share_cache(cpu, ccpu);
@@ -149,6 +152,8 @@ do_local:
 	} else if (raise_blk_irq(ccpu, req))
 		goto do_local;
 
+	put_cpu();
+	preempt_check_resched_rt();
 	local_irq_restore(flags);
 }
 

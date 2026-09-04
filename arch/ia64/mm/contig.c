@@ -129,7 +129,7 @@ skip:
 	return __per_cpu_start + __per_cpu_offset[smp_processor_id()];
 }
 
-static inline void
+static inline __init void
 alloc_per_cpu_data(void)
 {
 	cpu_data = __alloc_bootmem(PERCPU_PAGE_SIZE * num_possible_cpus(),
@@ -177,10 +177,7 @@ setup_per_cpu_areas(void)
 	ai->atom_size		= PAGE_SIZE;
 	ai->alloc_size		= PERCPU_PAGE_SIZE;
 
-	rc = pcpu_setup_first_chunk(ai, __per_cpu_start + __per_cpu_offset[0]);
-	if (rc)
-		panic("failed to setup percpu area (err=%d)", rc);
-
+        pcpu_setup_first_chunk(ai, __per_cpu_start + __per_cpu_offset[0]);
 	pcpu_free_alloc_info(ai);
 }
 #else

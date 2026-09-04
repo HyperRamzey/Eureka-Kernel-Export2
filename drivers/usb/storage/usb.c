@@ -951,6 +951,9 @@ int usb_stor_probe1(struct us_data **pus,
 	/*
 	 * Allow 16-byte CDBs and thus > 2TB
 	 */
+#ifdef CONFIG_USB_STORAGE_DETECT
+	host->by_usb = 1;
+#endif
 	host->max_cmd_len = 16;
 	host->sg_tablesize = usb_stor_sg_tablesize(intf);
 	*pus = us = host_to_us(host);
@@ -1057,7 +1060,7 @@ int usb_stor_probe2(struct us_data *us)
 
 	if (delay_use > 0)
 		dev_dbg(dev, "waiting for device to settle before scanning\n");
-	queue_delayed_work(system_freezable_wq, &us->scan_dwork,
+	queue_delayed_work(system_freezable_power_efficient_wq, &us->scan_dwork,
 			delay_use * HZ);
 	return 0;
 
@@ -1073,9 +1076,17 @@ EXPORT_SYMBOL_GPL(usb_stor_probe2);
 void usb_stor_disconnect(struct usb_interface *intf)
 {
 	struct us_data *us = usb_get_intfdata(intf);
-
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s enter\n", __func__);
+#endif
 	quiesce_and_remove_host(us);
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s doing\n", __func__);
+#endif
 	release_everything(us);
+#ifdef CONFIG_USB_STORAGE_DETECT
+	pr_info("%s exit\n", __func__);
+#endif
 }
 EXPORT_SYMBOL_GPL(usb_stor_disconnect);
 

@@ -132,6 +132,8 @@ struct snd_compr_ops {
 			struct snd_compr_caps *caps);
 	int (*get_codec_caps) (struct snd_compr_stream *stream,
 			struct snd_compr_codec_caps *codec);
+	int (*get_hw_params)(struct snd_compr_stream *stream,
+			 struct snd_pcm_hw_params *params);
 };
 
 /**
@@ -180,13 +182,7 @@ static inline void snd_compr_drain_notify(struct snd_compr_stream *stream)
 	if (snd_BUG_ON(!stream))
 		return;
 
-	/* for partial_drain case we are back to running state on success */
-	if (stream->partial_drain) {
-		stream->runtime->state = SNDRV_PCM_STATE_RUNNING;
-		stream->partial_drain = false; /* clear this flag as well */
-	} else {
-		stream->runtime->state = SNDRV_PCM_STATE_SETUP;
-	}
+	stream->runtime->state = SNDRV_PCM_STATE_SETUP;
 
 	wake_up(&stream->runtime->sleep);
 }

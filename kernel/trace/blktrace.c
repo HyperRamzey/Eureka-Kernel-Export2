@@ -1514,7 +1514,8 @@ blk_trace_event_print_binary(struct trace_iterator *iter, int flags,
 
 static enum print_line_t blk_tracer_print_line(struct trace_iterator *iter)
 {
-	if (!(blk_tracer_flags.val & TRACE_BLK_OPT_CLASSIC))
+	if ((iter->ent->type != TRACE_BLK) ||
+	    !(blk_tracer_flags.val & TRACE_BLK_OPT_CLASSIC))
 		return TRACE_TYPE_UNHANDLED;
 
 	return print_one_line(iter, true);
@@ -1907,6 +1908,8 @@ void blk_dump_cmd(char *buf, struct request *rq)
 	}
 }
 
+SIO_PATCH_VERSION(ftrace_discard_bugfix, 1, 0, "");
+
 void blk_fill_rwbs(char *rwbs, u32 rw, int bytes)
 {
 	int i = 0;
@@ -1914,13 +1917,13 @@ void blk_fill_rwbs(char *rwbs, u32 rw, int bytes)
 	if (rw & REQ_FLUSH)
 		rwbs[i++] = 'F';
 
-	if (rw & WRITE)
-		rwbs[i++] = 'W';
-	else if (rw & REQ_DISCARD)
-		rwbs[i++] = 'D';
-	else if (bytes)
-		rwbs[i++] = 'R';
-	else
+        if (rw & REQ_DISCARD)
+                rwbs[i++] = 'D';
+        else if (rw & WRITE)
+                rwbs[i++] = 'W';
+        else if (bytes)
+                rwbs[i++] = 'R';
+        else
 		rwbs[i++] = 'N';
 
 	if (rw & REQ_FUA)

@@ -285,6 +285,8 @@ static int create_image(int platform_mode)
 
 	local_irq_disable();
 
+	system_state = SYSTEM_SUSPEND;
+
 	error = syscore_suspend();
 	if (error) {
 		printk(KERN_ERR "PM: Some system devices failed to power down, "
@@ -314,6 +316,7 @@ static int create_image(int platform_mode)
 	syscore_resume();
 
  Enable_irqs:
+	system_state = SYSTEM_RUNNING;
 	local_irq_enable();
 
  Enable_cpus:
@@ -438,6 +441,7 @@ static int resume_target_kernel(bool platform_mode)
 		goto Enable_cpus;
 
 	local_irq_disable();
+	system_state = SYSTEM_SUSPEND;
 
 	error = syscore_suspend();
 	if (error)
@@ -471,6 +475,7 @@ static int resume_target_kernel(bool platform_mode)
 	syscore_resume();
 
  Enable_irqs:
+	system_state = SYSTEM_RUNNING;
 	local_irq_enable();
 
  Enable_cpus:
@@ -556,6 +561,7 @@ int hibernation_platform_enter(void)
 		goto Enable_cpus;
 
 	local_irq_disable();
+	system_state = SYSTEM_SUSPEND;
 	syscore_suspend();
 	if (pm_wakeup_pending()) {
 		error = -EAGAIN;
@@ -568,6 +574,7 @@ int hibernation_platform_enter(void)
 
  Power_up:
 	syscore_resume();
+	system_state = SYSTEM_RUNNING;
 	local_irq_enable();
 
  Enable_cpus:
@@ -600,6 +607,22 @@ static void power_down(void)
 {
 #ifdef CONFIG_SUSPEND
 	int error;
+
+	if (hibernation_mode == HIBERNATION_SUSPEND) {
+		error = suspend_devices_and_enter(PM_SUSPEND_MEM);
+		if (error) {
+			hibernation_mode = hibernation_ops ?
+						HIBERNATION_PLATFORM :
+						HIBERNATION_SHUTDOWN;
+		} else {
+			/* Restore swap signature. */
+			error = swsusp_unmark();
+			if (error)
+				pr_err("PM: Swap will be unusable! Try swapon -a.\n");
+
+			return;
+		}
+	}
 #endif
 
 	switch (hibernation_mode) {
@@ -612,25 +635,6 @@ static void power_down(void)
 		if (pm_power_off)
 			kernel_power_off();
 		break;
-#ifdef CONFIG_SUSPEND
-	case HIBERNATION_SUSPEND:
-		error = suspend_devices_and_enter(PM_SUSPEND_MEM);
-		if (error) {
-			if (hibernation_ops)
-				hibernation_mode = HIBERNATION_PLATFORM;
-			else
-				hibernation_mode = HIBERNATION_SHUTDOWN;
-			power_down();
-		}
-		/*
-		 * Restore swap signature.
-		 */
-		error = swsusp_unmark();
-		if (error)
-			printk(KERN_ERR "PM: Swap will be unusable! "
-			                "Try swapon -a.\n");
-		return;
-#endif
 	}
 	kernel_halt();
 	/*
@@ -642,17 +646,23 @@ static void power_down(void)
 		cpu_relax();
 }
 
+#ifndef CONFIG_SUSPEND
+bool pm_in_action;
+#endif
+
 /**
  * hibernate - Carry out system hibernation, including saving the image.
  */
 int hibernate(void)
 {
-	int error;
+	int error, nr_calls = 0;
 
 	if (!hibernation_available()) {
 		pr_debug("PM: Hibernation not available.\n");
 		return -EPERM;
 	}
+
+	pm_in_action = true;
 
 	lock_system_sleep();
 	/* The snapshot device should not be opened while we're running */
@@ -662,9 +672,11 @@ int hibernate(void)
 	}
 
 	pm_prepare_console();
-	error = pm_notifier_call_chain(PM_HIBERNATION_PREPARE);
-	if (error)
+	error = __pm_notifier_call_chain(PM_HIBERNATION_PREPARE, -1, &nr_calls);
+	if (error) {
+		nr_calls--;
 		goto Exit;
+	}
 
 	printk(KERN_INFO "PM: Syncing filesystems ... ");
 	sys_sync();
@@ -714,11 +726,11 @@ int hibernate(void)
 	/* Don't bother checking whether freezer_test_done is true */
 	freezer_test_done = false;
  Exit:
-	pm_notifier_call_chain(PM_POST_HIBERNATION);
+	__pm_notifier_call_chain(PM_POST_HIBERNATION, nr_calls, NULL);
 	pm_restore_console();
 	atomic_inc(&snapshot_device_available);
  Unlock:
-	unlock_system_sleep();
+	pm_in_action = false;
 	return error;
 }
 
@@ -740,7 +752,7 @@ int hibernate(void)
  */
 static int software_resume(void)
 {
-	int error;
+	int error, nr_calls = 0;
 	unsigned int flags;
 
 	/*
@@ -816,9 +828,11 @@ static int software_resume(void)
 	}
 
 	pm_prepare_console();
-	error = pm_notifier_call_chain(PM_RESTORE_PREPARE);
-	if (error)
+	error = __pm_notifier_call_chain(PM_RESTORE_PREPARE, -1, &nr_calls);
+	if (error) {
+		nr_calls--;
 		goto Close_Finish;
+	}
 
 	pr_debug("PM: Preparing processes for restore.\n");
 	error = freeze_processes();
@@ -844,7 +858,7 @@ static int software_resume(void)
 	unlock_device_hotplug();
 	thaw_processes();
  Finish:
-	pm_notifier_call_chain(PM_POST_RESTORE);
+	__pm_notifier_call_chain(PM_POST_RESTORE, nr_calls, NULL);
 	pm_restore_console();
 	atomic_inc(&snapshot_device_available);
 	/* For success case, the suspend path will release the lock */
@@ -1067,7 +1081,7 @@ static struct attribute * g[] = {
 };
 
 
-static struct attribute_group attr_group = {
+static const struct attribute_group attr_group = {
 	.attrs = g,
 };
 
@@ -1104,13 +1118,16 @@ static int __init resume_offset_setup(char *str)
 
 static int __init hibernate_setup(char *str)
 {
-	if (!strncmp(str, "noresume", 8))
+	if (!strncmp(str, "noresume", 8)) {
 		noresume = 1;
-	else if (!strncmp(str, "nocompress", 10))
+	} else if (!strncmp(str, "nocompress", 10)) {
 		nocompress = 1;
-	else if (!strncmp(str, "no", 2)) {
+	} else if (!strncmp(str, "no", 2)) {
 		noresume = 1;
 		nohibernate = 1;
+	} else if (IS_ENABLED(CONFIG_DEBUG_RODATA)
+		   && !strncmp(str, "protect_image", 13)) {
+		enable_restore_image_protection();
 	}
 	return 1;
 }
@@ -1132,7 +1149,7 @@ static int __init resumedelay_setup(char *str)
 	int rc = kstrtouint(str, 0, &resume_delay);
 
 	if (rc)
-		return rc;
+		pr_warn("resumedelay: bad option string '%s'\n", str);
 	return 1;
 }
 

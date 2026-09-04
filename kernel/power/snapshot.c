@@ -38,6 +38,43 @@
 
 #include "power.h"
 
+#ifdef CONFIG_DEBUG_RODATA
+static bool hibernate_restore_protection;
+static bool hibernate_restore_protection_active;
+
+void enable_restore_image_protection(void)
+{
+	hibernate_restore_protection = true;
+}
+
+static inline void hibernate_restore_protection_begin(void)
+{
+	hibernate_restore_protection_active = hibernate_restore_protection;
+}
+
+static inline void hibernate_restore_protection_end(void)
+{
+	hibernate_restore_protection_active = false;
+}
+
+static inline void hibernate_restore_protect_page(void *page_address)
+{
+	if (hibernate_restore_protection_active)
+		set_memory_ro((unsigned long)page_address, 1);
+}
+
+static inline void hibernate_restore_unprotect_page(void *page_address)
+{
+	if (hibernate_restore_protection_active)
+		set_memory_rw((unsigned long)page_address, 1);
+}
+#else
+static inline void hibernate_restore_protection_begin(void) {}
+static inline void hibernate_restore_protection_end(void) {}
+static inline void hibernate_restore_protect_page(void *page_address) {}
+static inline void hibernate_restore_unprotect_page(void *page_address) {}
+#endif /* CONFIG_DEBUG_RODATA */
+
 static int swsusp_page_is_free(struct page *);
 static void swsusp_set_page_forbidden(struct page *);
 static void swsusp_unset_page_forbidden(struct page *);
@@ -64,7 +101,7 @@ unsigned long image_size;
 
 void __init hibernate_image_size_init(void)
 {
-	image_size = ((totalram_pages * 2) / 5) * PAGE_SIZE;
+	image_size = ((totalram_pages() * 2) / 5) * PAGE_SIZE;
 }
 
 /* List of PBEs needed for restoring the pages that were allocated before
@@ -128,6 +165,14 @@ static struct page *alloc_image_page(gfp_t gfp_mask)
 		swsusp_set_page_free(page);
 	}
 	return page;
+}
+
+static void recycle_safe_page(void *page_address)
+{
+	struct linked_page *lp = page_address;
+
+	lp->next = safe_pages_list;
+	safe_pages_list = lp;
 }
 
 /**
@@ -832,6 +877,34 @@ struct nosave_region {
 
 static LIST_HEAD(nosave_regions);
 
+static void recycle_zone_bm_rtree(struct mem_zone_bm_rtree *zone)
+{
+	struct rtree_node *node;
+
+	list_for_each_entry(node, &zone->nodes, list)
+		recycle_safe_page(node->data);
+
+	list_for_each_entry(node, &zone->leaves, list)
+		recycle_safe_page(node->data);
+}
+
+static void memory_bm_recycle(struct memory_bitmap *bm)
+{
+	struct mem_zone_bm_rtree *zone;
+	struct linked_page *p_list;
+
+	list_for_each_entry(zone, &bm->zones, list)
+		recycle_zone_bm_rtree(zone);
+
+	p_list = bm->p_list;
+	while (p_list) {
+		struct linked_page *lp = p_list;
+
+		p_list = lp->next;
+		recycle_safe_page(lp);
+	}
+}
+
 /**
  *	register_nosave_region - register a range of page frames the contents
  *	of which should not be saved during the suspend (to be used in the early
@@ -1298,7 +1371,7 @@ static unsigned int nr_meta_pages;
  * Numbers of normal and highmem page frames allocated for hibernation image
  * before suspending devices.
  */
-unsigned int alloc_normal, alloc_highmem;
+static unsigned int alloc_normal, alloc_highmem;
 /*
  * Memory bitmap used for marking saveable pages (during hibernation) or
  * hibernation image pages (during restore)
@@ -1351,6 +1424,7 @@ loop:
 
 		memory_bm_clear_current(forbidden_pages_map);
 		memory_bm_clear_current(free_pages_map);
+		hibernate_restore_unprotect_page(page_address(page));
 		__free_page(page);
 		goto loop;
 	}
@@ -1362,6 +1436,7 @@ out:
 	buffer = NULL;
 	alloc_normal = 0;
 	alloc_highmem = 0;
+	hibernate_restore_protection_end();
 }
 
 /* Helper functions used for the shrinking of memory. */
@@ -1546,8 +1621,8 @@ static unsigned long minimum_image_size(unsigned long saveable)
  * /sys/power/reserved_size, respectively).  To make this happen, we compute the
  * total number of available page frames and allocate at least
  *
- * ([page frames total] + PAGES_FOR_IO + [metadata pages]) / 2
- *  + 2 * DIV_ROUND_UP(reserved_size, PAGE_SIZE)
+ * ([page frames total] - PAGES_FOR_IO - [metadata pages]) / 2
+ *  - 2 * DIV_ROUND_UP(reserved_size, PAGE_SIZE)
  *
  * of them, which corresponds to the maximum size of a hibernation image.
  *
@@ -1999,44 +2074,8 @@ int snapshot_read_next(struct snapshot_handle *handle)
 	return PAGE_SIZE;
 }
 
-/**
- *	mark_unsafe_pages - mark the pages that cannot be used for storing
- *	the image during resume, because they conflict with the pages that
- *	had been used before suspend
- */
-
-static int mark_unsafe_pages(struct memory_bitmap *bm)
-{
-	struct zone *zone;
-	unsigned long pfn, max_zone_pfn;
-
-	/* Clear page flags */
-	for_each_populated_zone(zone) {
-		max_zone_pfn = zone_end_pfn(zone);
-		for (pfn = zone->zone_start_pfn; pfn < max_zone_pfn; pfn++)
-			if (pfn_valid(pfn))
-				swsusp_unset_page_free(pfn_to_page(pfn));
-	}
-
-	/* Mark pages that correspond to the "original" pfns as "unsafe" */
-	memory_bm_position_reset(bm);
-	do {
-		pfn = memory_bm_next_pfn(bm);
-		if (likely(pfn != BM_END_OF_MAP)) {
-			if (likely(pfn_valid(pfn)))
-				swsusp_set_page_free(pfn_to_page(pfn));
-			else
-				return -EFAULT;
-		}
-	} while (pfn != BM_END_OF_MAP);
-
-	allocated_unsafe_pages = 0;
-
-	return 0;
-}
-
-static void
-duplicate_memory_bitmap(struct memory_bitmap *dst, struct memory_bitmap *src)
+static void duplicate_memory_bitmap(struct memory_bitmap *dst,
+				    struct memory_bitmap *src)
 {
 	unsigned long pfn;
 
@@ -2046,6 +2085,30 @@ duplicate_memory_bitmap(struct memory_bitmap *dst, struct memory_bitmap *src)
 		memory_bm_set_bit(dst, pfn);
 		pfn = memory_bm_next_pfn(src);
 	}
+}
+
+/**
+ *	mark_unsafe_pages - mark the pages that cannot be used for storing
+ *	the image during resume, because they conflict with the pages that
+ *	had been used before suspend
+ */
+
+static void mark_unsafe_pages(struct memory_bitmap *bm)
+{
+	unsigned long pfn;
+
+	/* Clear the "free"/"unsafe" bit for all PFNs */
+	memory_bm_position_reset(free_pages_map);
+	pfn = memory_bm_next_pfn(free_pages_map);
+	while (pfn != BM_END_OF_MAP) {
+		memory_bm_clear_current(free_pages_map);
+		pfn = memory_bm_next_pfn(free_pages_map);
+	}
+
+	/* Mark pages that correspond to the "original" PFNs as "unsafe" */
+	duplicate_memory_bitmap(free_pages_map, bm);
+
+	allocated_unsafe_pages = 0;
 }
 
 static int check_header(struct swsusp_info *info)
@@ -2095,7 +2158,7 @@ static int unpack_orig_pfns(unsigned long *buf, struct memory_bitmap *bm)
 		/* Extract and buffer page key for data page (s390 only). */
 		page_key_memorize(buf + j);
 
-		if (memory_bm_pfn_present(bm, buf[j]))
+		if (pfn_valid(buf[j]) && memory_bm_pfn_present(bm, buf[j]))
 			memory_bm_set_bit(bm, buf[j]);
 		else
 			return -EFAULT;
@@ -2342,9 +2405,7 @@ prepare_image(struct memory_bitmap *new_bm, struct memory_bitmap *bm)
 	buffer = NULL;
 
 	nr_highmem = count_highmem_image_pages(bm);
-	error = mark_unsafe_pages(bm);
-	if (error)
-		goto Free;
+	mark_unsafe_pages(bm);
 
 	error = memory_bm_create(new_bm, GFP_ATOMIC, PG_SAFE);
 	if (error)
@@ -2475,8 +2536,6 @@ int snapshot_write_next(struct snapshot_handle *handle)
 	if (handle->cur > 1 && handle->cur > nr_meta_pages + nr_copy_pages)
 		return 0;
 
-	handle->sync_read = 1;
-
 	if (!handle->cur) {
 		if (!buffer)
 			/* This makes the buffer be freed by swsusp_free() */
@@ -2500,6 +2559,7 @@ int snapshot_write_next(struct snapshot_handle *handle)
 		if (error)
 			return error;
 
+		hibernate_restore_protection_begin();
 	} else if (handle->cur <= nr_meta_pages + 1) {
 		error = unpack_orig_pfns(buffer, &copy_bm);
 		if (error)
@@ -2514,7 +2574,6 @@ int snapshot_write_next(struct snapshot_handle *handle)
 			memory_bm_position_reset(&orig_bm);
 			restore_pblist = NULL;
 			handle->buffer = get_buffer(&orig_bm, &ca);
-			handle->sync_read = 0;
 			if (IS_ERR(handle->buffer))
 				return PTR_ERR(handle->buffer);
 		}
@@ -2522,12 +2581,12 @@ int snapshot_write_next(struct snapshot_handle *handle)
 		copy_last_highmem_page();
 		/* Restore page key for data page (s390 only). */
 		page_key_write(handle->buffer);
+		hibernate_restore_protect_page(handle->buffer);
 		handle->buffer = get_buffer(&orig_bm, &ca);
 		if (IS_ERR(handle->buffer))
 			return PTR_ERR(handle->buffer);
-		if (handle->buffer != buffer)
-			handle->sync_read = 0;
 	}
+	handle->sync_read = (handle->buffer == buffer);
 	handle->cur++;
 	return PAGE_SIZE;
 }
@@ -2546,9 +2605,10 @@ void snapshot_write_finalize(struct snapshot_handle *handle)
 	/* Restore page key for data page (s390 only). */
 	page_key_write(handle->buffer);
 	page_key_free();
-	/* Free only if we have loaded the image entirely */
+	hibernate_restore_protect_page(handle->buffer);
+	/* Do that only if we have loaded the image entirely */
 	if (handle->cur > 1 && handle->cur > nr_meta_pages + nr_copy_pages) {
-		memory_bm_free(&orig_bm, PG_UNSAFE_CLEAR);
+		memory_bm_recycle(&orig_bm);
 		free_highmem_data();
 	}
 }

@@ -20,10 +20,12 @@
 #include <linux/wait.h>
 #include <linux/vmalloc.h>
 
+#include <net/addrconf.h>
 #include <net/inet_connection_sock.h>
 #include <net/inet_hashtables.h>
 #include <net/secure_seq.h>
 #include <net/ip.h>
+#include <net/sock_reuseport.h>
 
 static u32 inet_ehashfn(const struct net *net, const __be32 laddr,
 			const __u16 lport, const __be32 faddr,
@@ -206,6 +208,7 @@ static inline int compute_score(struct sock *sk, struct net *net,
 
 struct sock *__inet_lookup_listener(struct net *net,
 				    struct inet_hashinfo *hashinfo,
+				    struct sk_buff *skb, int doff,
 				    const __be32 saddr, __be16 sport,
 				    const __be32 daddr, const unsigned short hnum,
 				    const int dif)
@@ -215,6 +218,7 @@ struct sock *__inet_lookup_listener(struct net *net,
 	unsigned int hash = inet_lhashfn(net, hnum);
 	struct inet_listen_hashbucket *ilb = &hashinfo->listening_hash[hash];
 	int score, hiscore, matches = 0, reuseport = 0;
+	bool select_ok = true;
 	u32 phash = 0;
 
 	rcu_read_lock();
@@ -230,6 +234,15 @@ begin:
 			if (reuseport) {
 				phash = inet_ehashfn(net, daddr, hnum,
 						     saddr, sport);
+				if (select_ok) {
+					struct sock *sk2;
+					sk2 = reuseport_select_sock(sk, phash,
+								    skb, doff);
+					if (sk2) {
+						result = sk2;
+						goto found;
+					}
+				}
 				matches = 1;
 			}
 		} else if (score == hiscore && reuseport) {
@@ -247,11 +260,13 @@ begin:
 	if (get_nulls_value(node) != hash + LISTENING_NULLS_BASE)
 		goto begin;
 	if (result) {
+found:
 		if (unlikely(!atomic_inc_not_zero(&result->sk_refcnt)))
 			result = NULL;
 		else if (unlikely(compute_score(result, net, hnum, daddr,
 				  dif) < hiscore)) {
 			sock_put(result);
+			select_ok = false;
 			goto begin;
 		}
 	}
@@ -396,7 +411,7 @@ not_unique:
 	return -EADDRNOTAVAIL;
 }
 
-static u32 inet_sk_port_offset(const struct sock *sk)
+static u64 inet_sk_port_offset(const struct sock *sk)
 {
 	const struct inet_sock *inet = inet_sk(sk);
 
@@ -450,32 +465,73 @@ bool inet_ehash_nolisten(struct sock *sk, struct sock *osk)
 }
 EXPORT_SYMBOL_GPL(inet_ehash_nolisten);
 
-void __inet_hash(struct sock *sk, struct sock *osk)
+static int inet_reuseport_add_sock(struct sock *sk,
+				   struct inet_listen_hashbucket *ilb,
+				   int (*saddr_same)(const struct sock *sk1,
+						     const struct sock *sk2,
+						     bool match_wildcard))
+{
+	struct inet_bind_bucket *tb = inet_csk(sk)->icsk_bind_hash;
+	struct sock *sk2;
+	struct hlist_nulls_node *node;
+	kuid_t uid = sock_i_uid(sk);
+
+	sk_nulls_for_each_rcu(sk2, node, &ilb->head) {
+		if (sk2 != sk &&
+		    sk2->sk_family == sk->sk_family &&
+		    ipv6_only_sock(sk2) == ipv6_only_sock(sk) &&
+		    sk2->sk_bound_dev_if == sk->sk_bound_dev_if &&
+		    inet_csk(sk2)->icsk_bind_hash == tb &&
+		    sk2->sk_reuseport && uid_eq(uid, sock_i_uid(sk2)) &&
+		    saddr_same(sk, sk2, false))
+			return reuseport_add_sock(sk, sk2);
+	}
+
+	return reuseport_alloc(sk);
+}
+
+int __inet_hash(struct sock *sk, struct sock *osk,
+		 int (*saddr_same)(const struct sock *sk1,
+				   const struct sock *sk2,
+				   bool match_wildcard))
 {
 	struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo;
 	struct inet_listen_hashbucket *ilb;
+	int err = 0;
 
 	if (sk->sk_state != TCP_LISTEN) {
 		inet_ehash_nolisten(sk, osk);
-		return;
+		return 0;
 	}
 	WARN_ON(!sk_unhashed(sk));
 	ilb = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)];
 
 	spin_lock(&ilb->lock);
+	if (sk->sk_reuseport) {
+		err = inet_reuseport_add_sock(sk, ilb, saddr_same);
+		if (err)
+			goto unlock;
+	}
 	__sk_nulls_add_node_rcu(sk, &ilb->head);
 	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+unlock:
 	spin_unlock(&ilb->lock);
+
+	return err;
 }
 EXPORT_SYMBOL(__inet_hash);
 
-void inet_hash(struct sock *sk)
+int inet_hash(struct sock *sk)
 {
+	int err = 0;
+
 	if (sk->sk_state != TCP_CLOSE) {
 		local_bh_disable();
-		__inet_hash(sk, NULL);
+		err = __inet_hash(sk, NULL, ipv4_rcv_saddr_equal);
 		local_bh_enable();
 	}
+
+	return err;
 }
 EXPORT_SYMBOL_GPL(inet_hash);
 
@@ -494,6 +550,8 @@ void inet_unhash(struct sock *sk)
 		lock = inet_ehash_lockp(hashinfo, sk->sk_hash);
 
 	spin_lock_bh(lock);
+	if (rcu_access_pointer(sk->sk_reuseport_cb))
+		reuseport_detach_sock(sk);
 	done = __sk_nulls_del_node_init_rcu(sk);
 	if (done)
 		sock_prot_inuse_add(sock_net(sk), sk->sk_prot, -1);
@@ -501,8 +559,21 @@ void inet_unhash(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(inet_unhash);
 
+/* RFC 6056 3.3.4.  Algorithm 4: Double-Hash Port Selection Algorithm
+ * Note that we use 32bit integers (vs RFC 'short integers')
+ * because 2^16 is not a multiple of num_ephemeral and this
+ * property might be used by clever attacker.
+ * RFC claims using TABLE_LENGTH=10 buckets gives an improvement, though
+ * attacks were since demonstrated, thus we use 65536 instead to really
+ * give more isolation and privacy, at the expense of 256kB of kernel
+ * memory.
+ */
+#define INET_TABLE_PERTURB_SHIFT 16
+#define INET_TABLE_PERTURB_SIZE (1 << INET_TABLE_PERTURB_SHIFT)
+static u32 *table_perturb;
+
 int __inet_hash_connect(struct inet_timewait_death_row *death_row,
-		struct sock *sk, u32 port_offset,
+		struct sock *sk, u64 port_offset,
 		int (*check_established)(struct inet_timewait_death_row *,
 			struct sock *, __u16, struct inet_timewait_sock **))
 {
@@ -515,9 +586,14 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 
 	if (!snum) {
 		int i, remaining, low, high, port;
-		static u32 hint;
-		u32 offset = hint + port_offset;
+		u32 index;
+		u32 offset;
 		struct inet_timewait_sock *tw = NULL;
+
+		net_get_random_once(table_perturb,
+				    INET_TABLE_PERTURB_SIZE * sizeof(*table_perturb));
+		index = port_offset & (INET_TABLE_PERTURB_SIZE - 1);
+		offset = READ_ONCE(table_perturb[index]) + (port_offset >> 32);
 
 		inet_get_local_port_range(net, &low, &high);
 		remaining = (high - low) + 1;
@@ -573,8 +649,14 @@ int __inet_hash_connect(struct inet_timewait_death_row *death_row,
 		return -EADDRNOTAVAIL;
 
 ok:
-		hint += (i + 2) & ~1;
-
+		/* Here we want to add a little bit of randomness to the next source
+		 * port that will be chosen. We use a max() with a random here so that
+		 * on low contention the randomness is maximal and on high contention
+		 * it may be inexistent.
+		 */
+		i = max_t(int, i, (prandom_u32() & 7) * 2);
+		WRITE_ONCE(table_perturb[index], (READ_ONCE(table_perturb[index]) + i + 2) & ~1);
+		
 		/* Head lock still held and bh's disabled */
 		inet_bind_hash(sk, tb, port);
 		if (sk_unhashed(sk)) {
@@ -615,7 +697,7 @@ out:
 int inet_hash_connect(struct inet_timewait_death_row *death_row,
 		      struct sock *sk)
 {
-	u32 port_offset = 0;
+	u64 port_offset = 0;
 
 	if (!inet_sk(sk)->inet_num)
 		port_offset = inet_sk_port_offset(sk);
@@ -632,7 +714,16 @@ void inet_hashinfo_init(struct inet_hashinfo *h)
 		spin_lock_init(&h->listening_hash[i].lock);
 		INIT_HLIST_NULLS_HEAD(&h->listening_hash[i].head,
 				      i + LISTENING_NULLS_BASE);
-		}
+	}
+
+	if (table_perturb)
+		return;
+
+	/* this one is used for source ports of outgoing connections */
+	table_perturb = kmalloc_array(INET_TABLE_PERTURB_SIZE,
+				      sizeof(*table_perturb), GFP_KERNEL);
+	if (!table_perturb)
+		panic("TCP: failed to alloc table_perturb");
 }
 EXPORT_SYMBOL_GPL(inet_hashinfo_init);
 

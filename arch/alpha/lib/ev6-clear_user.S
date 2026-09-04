@@ -28,7 +28,6 @@
  *	want to leave a hole (and we also want to avoid repeating lots of work)
  */
 
-#include <asm/export.h>
 /* Allow an exception for an insn; exit if we get one.  */
 #define EX(x,y...)			\
 	99: x,##y;			\

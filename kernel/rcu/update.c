@@ -46,7 +46,7 @@
 #include <linux/export.h>
 #include <linux/hardirq.h>
 #include <linux/delay.h>
-#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/kthread.h>
 #include <linux/tick.h>
 
@@ -54,15 +54,19 @@
 
 #include "rcu.h"
 
-MODULE_ALIAS("rcupdate");
 #ifdef MODULE_PARAM_PREFIX
 #undef MODULE_PARAM_PREFIX
 #endif
 #define MODULE_PARAM_PREFIX "rcupdate."
 
+#ifndef CONFIG_TINY_RCU
 module_param(rcu_expedited, int, 0);
+module_param(rcu_normal, int, 0);
+static int rcu_normal_after_boot;
+module_param(rcu_normal_after_boot, int, 0);
+#endif /* #ifndef CONFIG_TINY_RCU */
 
-#if defined(CONFIG_DEBUG_LOCK_ALLOC) && defined(CONFIG_PREEMPT_COUNT)
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
 /**
  * rcu_read_lock_sched_held() - might we be in RCU-sched read-side critical section?
  *
@@ -106,15 +110,26 @@ int rcu_read_lock_sched_held(void)
 		return 0;
 	if (debug_locks)
 		lockdep_opinion = lock_is_held(&rcu_sched_lock_map);
-	return lockdep_opinion || preempt_count() != 0 || irqs_disabled();
+	return lockdep_opinion || !preemptible();
 }
 EXPORT_SYMBOL(rcu_read_lock_sched_held);
 #endif
 
 #ifndef CONFIG_TINY_RCU
 
-static atomic_t rcu_expedited_nesting =
-	ATOMIC_INIT(IS_ENABLED(CONFIG_RCU_EXPEDITE_BOOT) ? 1 : 0);
+/*
+ * Should expedited grace-period primitives always fall back to their
+ * non-expedited counterparts?  Intended for use within RCU.  Note
+ * that if the user specifies both rcu_expedited and rcu_normal, then
+ * rcu_normal wins.
+ */
+bool rcu_gp_is_normal(void)
+{
+	return READ_ONCE(rcu_normal);
+}
+EXPORT_SYMBOL_GPL(rcu_gp_is_normal);
+
+static atomic_t rcu_expedited_nesting = ATOMIC_INIT(1);
 
 /*
  * Should normal grace-period primitives be expedited?  Intended for
@@ -157,16 +172,17 @@ void rcu_unexpedite_gp(void)
 }
 EXPORT_SYMBOL_GPL(rcu_unexpedite_gp);
 
-#endif /* #ifndef CONFIG_TINY_RCU */
-
 /*
  * Inform RCU of the end of the in-kernel boot sequence.
  */
 void rcu_end_inkernel_boot(void)
 {
-	if (IS_ENABLED(CONFIG_RCU_EXPEDITE_BOOT))
-		rcu_unexpedite_gp();
+	rcu_unexpedite_gp();
+	if (rcu_normal_after_boot)
+		WRITE_ONCE(rcu_normal, 1);
 }
+
+#endif /* #ifndef CONFIG_TINY_RCU */
 
 #ifdef CONFIG_PREEMPT_RCU
 
@@ -276,6 +292,7 @@ int rcu_read_lock_held(void)
 }
 EXPORT_SYMBOL_GPL(rcu_read_lock_held);
 
+#ifndef CONFIG_PREEMPT_RT_FULL
 /**
  * rcu_read_lock_bh_held() - might we be in RCU-bh read-side critical section?
  *
@@ -302,6 +319,7 @@ int rcu_read_lock_bh_held(void)
 	return in_softirq() || irqs_disabled();
 }
 EXPORT_SYMBOL_GPL(rcu_read_lock_bh_held);
+#endif
 
 #endif /* #ifdef CONFIG_DEBUG_LOCK_ALLOC */
 
@@ -367,7 +385,7 @@ void destroy_rcu_head(struct rcu_head *head)
  * - an unknown object is activated (might be a statically initialized object)
  * Activation is performed internally by call_rcu().
  */
-static int rcuhead_fixup_activate(void *addr, enum debug_obj_state state)
+static bool rcuhead_fixup_activate(void *addr, enum debug_obj_state state)
 {
 	struct rcu_head *head = addr;
 
@@ -380,9 +398,9 @@ static int rcuhead_fixup_activate(void *addr, enum debug_obj_state state)
 		 */
 		debug_object_init(head, &rcuhead_debug_descr);
 		debug_object_activate(head, &rcuhead_debug_descr);
-		return 0;
+		return false;
 	default:
-		return 1;
+		return true;
 	}
 }
 
@@ -529,6 +547,7 @@ static int rcu_task_stall_timeout __read_mostly = HZ * 60 * 10;
 module_param(rcu_task_stall_timeout, int, 0644);
 
 static void rcu_spawn_tasks_kthread(void);
+static struct task_struct *rcu_tasks_kthread_ptr;
 
 /*
  * Post an RCU-tasks callback.  First call must be from process context
@@ -538,6 +557,7 @@ void call_rcu_tasks(struct rcu_head *rhp, rcu_callback_t func)
 {
 	unsigned long flags;
 	bool needwake;
+	bool havetask = READ_ONCE(rcu_tasks_kthread_ptr);
 
 	rhp->next = NULL;
 	rhp->func = func;
@@ -546,7 +566,9 @@ void call_rcu_tasks(struct rcu_head *rhp, rcu_callback_t func)
 	*rcu_tasks_cbs_tail = rhp;
 	rcu_tasks_cbs_tail = &rhp->next;
 	raw_spin_unlock_irqrestore(&rcu_tasks_cbs_lock, flags);
-	if (needwake) {
+	/* We can't create the thread unless interrupts are enabled. */
+	if ((needwake && havetask) ||
+	    (!havetask && !irqs_disabled_flags(flags))) {
 		rcu_spawn_tasks_kthread();
 		wake_up(&rcu_tasks_cbs_wq);
 	}
@@ -650,6 +672,7 @@ static int __noreturn rcu_tasks_kthread(void *arg)
 	struct rcu_head *list;
 	struct rcu_head *next;
 	LIST_HEAD(rcu_tasks_holdouts);
+	int fract;
 
 	/* Run on housekeeping CPUs by default.  Sysadm can move if desired. */
 	housekeeping_affine(current);
@@ -731,13 +754,25 @@ static int __noreturn rcu_tasks_kthread(void *arg)
 		 * holdouts.  When the list is empty, we are done.
 		 */
 		lastreport = jiffies;
-		while (!list_empty(&rcu_tasks_holdouts)) {
+
+		/* Start off with HZ/10 wait and slowly back off to 1 HZ wait*/
+		fract = 10;
+
+		for (;;) {
 			bool firstreport;
 			bool needreport;
 			int rtst;
 			struct task_struct *t1;
 
-			schedule_timeout_interruptible(HZ);
+			if (list_empty(&rcu_tasks_holdouts))
+				break;
+
+			/* Slowly back off waiting for holdouts */
+			schedule_timeout_interruptible(HZ/fract);
+
+			if (fract > 1)
+				fract--;
+
 			rtst = READ_ONCE(rcu_task_stall_timeout);
 			needreport = rtst > 0 &&
 				     time_after(jiffies, lastreport + rtst);
@@ -791,7 +826,6 @@ static int __noreturn rcu_tasks_kthread(void *arg)
 static void rcu_spawn_tasks_kthread(void)
 {
 	static DEFINE_MUTEX(rcu_tasks_kthread_mutex);
-	static struct task_struct *rcu_tasks_kthread_ptr;
 	struct task_struct *t;
 
 	if (READ_ONCE(rcu_tasks_kthread_ptr)) {
@@ -803,7 +837,8 @@ static void rcu_spawn_tasks_kthread(void)
 		mutex_unlock(&rcu_tasks_kthread_mutex);
 		return;
 	}
-	t = kthread_run(rcu_tasks_kthread, NULL, "rcu_tasks_kthread");
+	t = kthread_run_perf_critical(cpu_perf_first_mask, rcu_tasks_kthread,
+				NULL, "rcu_tasks_kthread");
 	BUG_ON(IS_ERR(t));
 	smp_mb(); /* Ensure others see full kthread. */
 	WRITE_ONCE(rcu_tasks_kthread_ptr, t);

@@ -134,6 +134,8 @@ void __irq_wake_thread(struct irq_desc *desc, struct irqaction *action)
 
 irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 {
+	struct pt_regs *regs = get_irq_regs();
+	u64 ip = regs ? instruction_pointer(regs) : 0;
 	irqreturn_t retval = IRQ_NONE;
 	unsigned int flags = 0, irq = desc->irq_data.irq;
 	struct irqaction *action = desc->action;
@@ -143,7 +145,9 @@ irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 		irqreturn_t res;
 
 		trace_irq_handler_entry(irq, action);
+		exynos_ss_irq(irq, (void *)action->handler, (int)irqs_disabled(), ESS_FLAG_IN);
 		res = action->handler(irq, action->dev_id);
+		exynos_ss_irq(irq, (void *)action->handler, (int)irqs_disabled(), ESS_FLAG_OUT);
 		trace_irq_handler_exit(irq, action, res);
 
 		if (WARN_ONCE(!irqs_disabled(),"irq %u handler %pF enabled interrupts\n",
@@ -176,7 +180,11 @@ irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 		action = action->next;
 	}
 
-	add_interrupt_randomness(irq, flags);
+#ifdef CONFIG_PREEMPT_RT_FULL
+	desc->random_ip = ip;
+#else
+	add_interrupt_randomness(irq, ip);
+#endif
 
 	if (!noirqdebug)
 		note_interrupt(desc, retval);
