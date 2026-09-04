@@ -455,7 +455,6 @@ static irqreturn_t exynos4_mct_tick_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-/*
 static void exynos4_mct_tick_dump(unsigned int cpu)
 {
 	unsigned int icntb, icnto, tcon, intenb, intcstat;
@@ -464,9 +463,9 @@ static void exynos4_mct_tick_dump(unsigned int cpu)
 	if (cpu > CONFIG_NR_CPUS)
 		return;
 
-	* 5 times to verify *
+	/* 5 times to verify */
 	for (i = 0; i < 5; i++) {
-		* count buffer *
+		/* count buffer */
 		icntb = readl_relaxed(reg_base + EXYNOS4_MCT_L_BASE(cpu) + MCT_L_ICNTB_OFFSET);
 		icnto = readl_relaxed(reg_base + EXYNOS4_MCT_L_BASE(cpu) + MCT_L_ICNTO_OFFSET);
 		intenb = readl_relaxed(reg_base + EXYNOS4_MCT_L_BASE(cpu) + MCT_L_INT_ENB_OFFSET);
@@ -486,7 +485,7 @@ static int exynos4_mct_hardlockup_handler(struct notifier_block *nb,
 	exynos4_mct_tick_dump(*cpu);
 	return 0;
 }
-*/
+
 
 static int exynos4_local_timer_setup(struct mct_clock_event_device *mevt)
 {
