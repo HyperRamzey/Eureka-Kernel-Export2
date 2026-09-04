@@ -53,7 +53,7 @@ unsigned int rkp_get_usecount(struct cred *cred)
 	if (rkp_ro_page((unsigned long )cred))
 			return (unsigned int)rocred_uc_read(cred);
 	else
-			return atomic_read(&cred->usage);
+			return (unsigned int)atomic_long_read(&cred->usage);
 }
 
 struct cred *get_new_cred(struct cred *cred)
@@ -61,7 +61,7 @@ struct cred *get_new_cred(struct cred *cred)
 	if (rkp_ro_page((unsigned long)cred))
 		rocred_uc_inc(cred);
 	else
-		atomic_inc(&cred->usage);
+		atomic_long_inc(&cred->usage);
 	return cred;
 }
 
@@ -266,7 +266,7 @@ void __put_cred(struct cred *cred)
 		BUG_ON((rocred_uc_read(cred)) != 0);
 	else
 #endif /*CONFIG_RKP_KDP*/
-	BUG_ON(atomic_read(&cred->usage) != 0);
+	BUG_ON(atomic_long_read(&cred->usage) != 0);
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	BUG_ON(read_cred_subscribers(cred) != 0);
 	cred->magic = CRED_MAGIC_DEAD;
@@ -343,7 +343,7 @@ const struct cred *get_task_cred(struct task_struct *task)
 	do {
 		cred = __task_cred((task));
 		BUG_ON(!cred);
-	} while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));
+	} while (!atomic_long_inc_not_zero(&((struct cred *)cred)->usage));
 #endif /*CONFIG_RKP_KDP*/
 
 	rcu_read_unlock();
@@ -683,7 +683,7 @@ int commit_creds(struct cred *new)
 		BUG_ON((rocred_uc_read(new)) < 1);
 	else
 #endif
-	BUG_ON(atomic_read(&new->usage) < 1);
+	BUG_ON(atomic_long_read(&new->usage) < 1);
 
 	get_cred(new); /* we will require a ref for the subj creds too */
 
@@ -790,7 +790,7 @@ void abort_creds(struct cred *new)
 		BUG_ON((rocred_uc_read(new)) < 1);
 	else
 #endif  /* CONFIG_RKP_KDP */
-	BUG_ON(atomic_read(&new->usage) < 1);
+	BUG_ON(atomic_long_read(&new->usage) < 1);
 	put_cred(new);
 }
 EXPORT_SYMBOL(abort_creds);
@@ -1105,8 +1105,8 @@ static void dump_invalid_creds(const struct cred *cred, const char *label,
 	}
 	else
 #endif  /* CONFIG_RKP_KDP */
-	printk(KERN_ERR "CRED: ->usage=%d, subscr=%d\n",
-	       atomic_read(&cred->usage),
+	printk(KERN_ERR "CRED: ->usage=%ld, subscr=%d\n",
+	       atomic_long_read(&cred->usage),
 	       read_cred_subscribers(cred));
 	printk(KERN_ERR "CRED: ->*uid = { %d,%d,%d,%d }\n",
 		from_kuid_munged(&init_user_ns, cred->uid),

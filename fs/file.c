@@ -221,8 +221,8 @@ static int expand_fdtable(struct files_struct *files, int nr)
 		synchronize_sched();
 
 	spin_lock(&files->file_lock);
-	if (!new_fdt)
-		return -ENOMEM;
+	if (IS_ERR(new_fdt))
+		return PTR_ERR(new_fdt);
 	/*
 	 * extremely unlikely race - sysctl_nr_open decreased between the check in
 	 * caller and alloc_fdtable().  Cheaper to catch it here...
@@ -375,8 +375,8 @@ struct files_struct *dup_fd(struct files_struct *oldf, int *errorp)
 			__free_fdtable(new_fdt);
 
 		new_fdt = alloc_fdtable(open_files - 1);
-		if (!new_fdt) {
-			*errorp = -ENOMEM;
+		if (IS_ERR(new_fdt)) {
+			*errorp = PTR_ERR(new_fdt);
 			goto out_release;
 		}
 
