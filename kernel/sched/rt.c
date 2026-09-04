@@ -2772,7 +2772,6 @@ static int rto_next_cpu(struct rq *rq)
 	int next;
 	int cpu;
 	struct root_domain *rd = rq->rd;
-	int next;
 
 	/*
 	 * When starting the IPI RT pushing, the rto_cpu is set to -1,
