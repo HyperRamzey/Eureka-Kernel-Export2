@@ -1008,7 +1008,6 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 
 		if (!rate)
 			continue;
-		}
 
 		if (ourport->info->has_divslot) {
 			unsigned long div = rate / req_baud;
@@ -1038,8 +1037,6 @@ static unsigned int s3c24xx_serial_getclk(struct s3c24xx_uart_port *ourport,
 			best_quot = quot;
 			*clk_num = cnt;
 			deviation = calc_deviation;
-		} else {
-			clk_put(clk);
 		}
 	}
 
