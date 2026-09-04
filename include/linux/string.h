@@ -274,11 +274,11 @@ void memcpy_and_pad(void *dest, size_t dest_len, const void *src, size_t count,
  * and not a constant. Instead use str_has_prefix().
  *
  * Returns: 0 if @str does not start with @prefix
-         strlen(@prefix) if @str does start with @prefix
+ *	 strlen(@prefix) if @str does start with @prefix
+ */
 static __always_inline size_t str_has_prefix(const char *str, const char *prefix)
 {
 	size_t len = strlen(prefix);
 	return strncmp(str, prefix, len) == 0 ? len : 0;
 }
->>>>>>> theirs
 #endif /* _LINUX_STRING_H_ */
