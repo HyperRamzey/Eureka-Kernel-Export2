@@ -326,9 +326,6 @@ struct cg_proto;
   *	@sk_destruct: called at sock freeing time, i.e. when all refcnt == 0
   *	@sk_reuseport_cb: reuseport group container
  */
-  *	@sk_owner: reference to the real owner of the socket that calls
-  *		   sock_lock_init_class_and_name().
-  */
 struct sock {
 	/*
 	 * Now struct inet_timewait_sock also uses sock_common, so please just

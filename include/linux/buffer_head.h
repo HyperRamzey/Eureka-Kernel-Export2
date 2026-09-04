@@ -219,15 +219,6 @@ static __always_inline int buffer_uptodate(const struct buffer_head *bh)
 	return (smp_load_acquire(&bh->b_state) & (1UL << BH_Uptodate)) != 0;
 }
 
-static __always_inline int buffer_uptodate(const struct buffer_head *bh)
-{
-	/*
-	 * make it consistent with folio_test_uptodate
-	 * pairs with smp_mb__before_atomic in set_buffer_uptodate
-	 */
-	return (smp_load_acquire(&bh->b_state) & (1UL << BH_Uptodate)) != 0;
-}
-
 #define bh_offset(bh)		((unsigned long)(bh)->b_data & ~PAGE_MASK)
 
 /* If we *know* page->private refers to buffer_heads */
