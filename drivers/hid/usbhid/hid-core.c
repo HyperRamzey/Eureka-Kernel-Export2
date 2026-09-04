@@ -1051,7 +1051,8 @@ static int usbhid_parse(struct hid_device *hid)
 			hid_warn(intf, "fixing wrong optional hid class descriptors count\n");
 			hdesc->bNumDescriptors = fixed_opt_descriptors_size / sizeof(*hcdesc) + 1;
 		} else {
-		return -EINVAL;
+			return -EINVAL;
+		}
 	}
 	hid->version = le16_to_cpu(hdesc->bcdHID);
 	hid->country = hdesc->bCountryCode;
