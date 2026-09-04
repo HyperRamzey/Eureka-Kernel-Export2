@@ -773,10 +773,10 @@ int f2fs_inline_data_fiemap(struct inode *inode,
 		ilen = start + len;
 	ilen -= start;
 
-	get_node_info(F2FS_I_SB(inode), inode->i_ino, &ni);
+	f2fs_get_node_info(F2FS_I_SB(inode), inode->i_ino, &ni);
 	if (__is_valid_data_blkaddr(ni.blk_addr)) {
 		byteaddr = (__u64)ni.blk_addr << inode->i_sb->s_blocksize_bits;
-		byteaddr += (char *)inline_data_addr(ipage) -
+		byteaddr += (char *)inline_data_addr(inode, ipage) -
 						(char *)F2FS_INODE(ipage);
 	} else {
 		f2fs_bug_on(F2FS_I_SB(inode), ni.blk_addr != NEW_ADDR);
