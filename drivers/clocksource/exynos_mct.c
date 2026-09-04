@@ -576,11 +576,9 @@ static struct notifier_block exynos4_mct_cpu_nb = {
 	.notifier_call = exynos4_mct_cpu_notify,
 };
 
-/*
 static struct notifier_block nb_hardlockup_block = {
 	.notifier_call = exynos4_mct_hardlockup_handler,
 };
-*/
 
 static void __init exynos4_timer_resources(struct device_node *np, void __iomem *base)
 {
