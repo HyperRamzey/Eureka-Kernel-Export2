@@ -595,6 +595,7 @@ int inet_dgram_connect(struct socket *sock, struct sockaddr *uaddr,
 {
 	struct sock *sk = sock->sk;
 	int err;
+	const struct proto *prot;
 
 	if (addr_len < sizeof(uaddr->sa_family))
 		return -EINVAL;
@@ -838,6 +839,7 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 {
 	struct sock *sk = sock->sk;
     int err;
+	const struct proto *prot;
 
 	sock_rps_record_flow(sk);
 
@@ -849,7 +851,8 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 	    inet_autobind(sk))
 		return -EAGAIN;
 
-    err = sk->sk_prot->sendmsg(sk, msg, size);
+	prot = READ_ONCE(sk->sk_prot);
+	return prot->sendmsg(sk, msg, size);
     return err;
 }
 EXPORT_SYMBOL(inet_sendmsg);

@@ -691,4 +691,8 @@ static inline void mmc_retune_recheck(struct mmc_host *host)
 
 #define CQ_DBG 0
 
+static inline bool mmc_can_retune(struct mmc_host *host)
+{
+	return host->can_retune == 1;
+}
 #endif /* LINUX_MMC_HOST_H */
