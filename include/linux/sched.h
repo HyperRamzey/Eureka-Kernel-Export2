@@ -1718,6 +1718,9 @@ struct task_struct {
 	unsigned sched_migrated:1;
 	unsigned :0; /* force alignment to the next boundary */
 
+	/* Save user-dumpable when mm goes away */
+	unsigned user_dumpable:1;
+
 	/* unserialized, strictly 'current' */
 	unsigned in_execve:1; /* bit to tell LSMs we're in execve */
 	unsigned in_iowait:1;
@@ -1908,6 +1911,9 @@ struct task_struct {
 	unsigned int lockdep_recursion;
 	struct held_lock held_locks[MAX_LOCK_DEPTH];
 	gfp_t lockdep_reclaim_gfp;
+#endif
+#ifdef CONFIG_UBSAN
+	unsigned int in_ubsan;
 #endif
 
 /* journalling filesystem info */

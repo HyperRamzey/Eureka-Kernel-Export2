@@ -1811,6 +1811,7 @@ bottom_of_search_loop:
 		vsi->flags |= I40E_VSI_FLAG_FILTER_CHANGED;
 		vsi->back->flags |= I40E_FLAG_FILTER_SYNC;
 	}
+	i40e_service_event_schedule(vsi->back);
 }
 
 /**
@@ -3374,7 +3375,7 @@ free_queue_irqs:
 		irq_set_affinity_hint(pf->msix_entries[base + vector].vector,
 				      NULL);
 		free_irq(pf->msix_entries[base + vector].vector,
-			 &(vsi->q_vectors[vector]));
+			 vsi->q_vectors[vector]);
 	}
 	return err;
 }
@@ -4356,7 +4357,7 @@ static int i40e_pf_wait_txq_disabled(struct i40e_pf *pf)
 {
 	int v, ret = 0;
 
-	for (v = 0; v < pf->hw.func_caps.num_vsis; v++) {
+	for (v = 0; v < pf->num_alloc_vsi; v++) {
 		/* No need to wait for FCoE VSI queues */
 		if (pf->vsi[v] && pf->vsi[v]->type != I40E_VSI_FCOE) {
 			ret = i40e_vsi_wait_txq_disabled(pf->vsi[v]);
@@ -8791,7 +8792,6 @@ static int i40e_config_netdev(struct i40e_vsi *vsi)
 						     NETIF_F_HW_VLAN_CTAG_RX |
 						   NETIF_F_HW_VLAN_CTAG_FILTER);
 	netdev->priv_flags |= IFF_UNICAST_FLT;
-	netdev->priv_flags |= IFF_SUPP_NOFCS;
 	/* Setup netdev TC information */
 	i40e_vsi_config_netdev_tc(vsi, vsi->tc_config.enabled_tc);
 

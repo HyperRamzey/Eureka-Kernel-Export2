@@ -208,6 +208,12 @@ acpi_ns_walk_namespace(acpi_object_type type,
 		}
 	}
 
+	/* Avoid walking the namespace if the StartNode is NULL */
+
+	if (!start_node) {
+		return_ACPI_STATUS(AE_NO_NAMESPACE);
+	}
+
 	/* Null child means "get first node" */
 
 	parent_node = start_node;
