@@ -1171,7 +1171,16 @@ void nfc_unregister_rfkill(struct nfc_dev *dev)
 		rfkill_unregister(rfk);
 		rfkill_destroy(rfk);
 	}
+}
+EXPORT_SYMBOL(nfc_unregister_rfkill);
 
+/**
+ * nfc_remove_device - remove a nfc device in the nfc subsystem
+ *
+ * @dev: The nfc device to remove
+ */
+void nfc_remove_device(struct nfc_dev *dev)
+{
 	if (dev->ops->check_presence) {
 		del_timer_sync(&dev->check_pres_timer);
 		cancel_work_sync(&dev->check_pres_work);

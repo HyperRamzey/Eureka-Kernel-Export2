@@ -43,6 +43,11 @@
 #define HUB_QUIRK_DISABLE_AUTOSUSPEND		BIT(1)
 
 int deny_new_usb __read_mostly = 0;
+/*
+ * Give SS hubs 200ms time after wake to train downstream links before
+ * assuming no port activity and allowing hub to runtime suspend back.
+ */
+#define USB_SS_PORT_U0_WAKE_TIME	200  /* ms */
 
 /* Protect struct usb_device->state and ->children members
  * Note: Both are also protected by ->dev.sem, except that ->state can
